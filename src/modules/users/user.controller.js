@@ -1,4 +1,4 @@
-const { createUser } = require("./user.service");
+const { createUser, listUsers, updateUser } = require("./user.service");
 
 // Limpia los datos del usuario antes de enviarlos al cliente
 function sanitizeUser(usuario) {
@@ -68,6 +68,100 @@ async function createUserByAdmin(req, res) {
   }
 }
 
+// Controlador para listar usuarios con filtros y paginación para administradores
+async function listUsersByAdmin(req, res) {
+  try {
+    const { estado, rol, page, limit } = req.query;
+
+    const result = await listUsers({
+      estado: estado || undefined,
+      rol: rol || undefined,
+      page: page || 1,
+      limit: limit || 20,
+    });
+
+    return res.status(200).json({
+      ok: true,
+      data: {
+        items: result.items.map(sanitizeUser),
+        total: result.total,
+        page: result.page,
+        limit: result.limit,
+      },
+    });
+  } catch (err) {
+    const status = err.status || 500;
+    const code = err.code || "INTERNAL_ERROR";
+
+    return res.status(status).json({
+      ok: false,
+      error: code,
+      message:
+        status === 500
+          ? "Error interno del servidor"
+          : err.message || "Error al listar usuarios",
+    });
+  }
+}
+
+// Controlador para actualizar datos básicos de un usuario desde un administrador
+async function updateUserByAdmin(req, res) {
+  try {
+    const { id } = req.params;
+    const { nombre, rol, estado } = req.body;
+
+    if (!id) {
+      return res.status(400).json({
+        ok: false,
+        error: "MISSING_USER_ID",
+        message: "El id del usuario es obligatorio",
+      });
+    }
+
+    const updates = {};
+    if (typeof nombre !== "undefined") updates.nombre = nombre;
+    if (typeof rol !== "undefined") updates.rol = rol;
+    if (typeof estado !== "undefined") updates.estado = estado;
+
+    if (Object.keys(updates).length === 0) {
+      return res.status(400).json({
+        ok: false,
+        error: "NO_UPDATES_PROVIDED",
+        message: "No se proporcionaron campos para actualizar",
+      });
+    }
+
+    const currentAdminId = req.user ? req.user.id : null;
+
+    const usuarioActualizado = await updateUser({
+      userId: id,
+      updates,
+      currentAdminId,
+    });
+
+    return res.status(200).json({
+      ok: true,
+      data: {
+        usuario: sanitizeUser(usuarioActualizado),
+      },
+    });
+  } catch (err) {
+    const status = err.status || 500;
+    const code = err.code || "INTERNAL_ERROR";
+
+    return res.status(status).json({
+      ok: false,
+      error: code,
+      message:
+        status === 500
+          ? "Error interno del servidor"
+          : err.message || "Error al actualizar el usuario",
+    });
+  }
+}
+
 module.exports = {
   createUserByAdmin,
+  listUsersByAdmin,
+  updateUserByAdmin,
 };

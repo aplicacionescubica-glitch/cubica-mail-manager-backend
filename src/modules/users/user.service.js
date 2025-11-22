@@ -58,12 +58,16 @@ async function createUser({ email, nombre, rol, password, createdBy }) {
 
   await usuario.save();
 
-  await sendEmailVerification({
-    usuarioEmail: usuario.email,
-    nombre: usuario.nombre,
-    rol: usuario.rol,
-    token,
-  });
+  try {
+    await sendEmailVerification({
+      usuarioEmail: usuario.email,
+      nombre: usuario.nombre,
+      rol: usuario.rol,
+      token,
+    });
+  } catch (err) {
+    console.warn("[Mail] Error al enviar correo de verificación:", err.message);
+  }
 
   return {
     usuario,
@@ -71,6 +75,99 @@ async function createUser({ email, nombre, rol, password, createdBy }) {
   };
 }
 
+// Lista usuarios con filtros opcionales y paginación básica
+async function listUsers({ estado, rol, page = 1, limit = 20 } = {}) {
+  const query = {};
+
+  if (estado) {
+    query.estado = estado;
+  }
+
+  if (rol) {
+    query.rol = rol;
+  }
+
+  const pageNum = Math.max(1, parseInt(page, 10) || 1);
+  const pageSize = Math.max(1, Math.min(100, parseInt(limit, 10) || 20));
+  const skip = (pageNum - 1) * pageSize;
+
+  const [items, total] = await Promise.all([
+    Usuario.find(query)
+      .sort({ createdAt: -1 })
+      .skip(skip)
+      .limit(pageSize),
+    Usuario.countDocuments(query),
+  ]);
+
+  return {
+    items,
+    total,
+    page: pageNum,
+    limit: pageSize,
+  };
+}
+
+// Actualiza datos básicos de un usuario desde un administrador
+async function updateUser({ userId, updates, currentAdminId }) {
+  const usuario = await Usuario.findById(userId);
+
+  if (!usuario) {
+    const error = new Error("Usuario no encontrado");
+    error.status = 404;
+    error.code = "USER_NOT_FOUND";
+    throw error;
+  }
+
+  if (usuario._id.toString() === currentAdminId) {
+    if (typeof updates.rol !== "undefined" || typeof updates.estado !== "undefined") {
+      const error = new Error("No puedes modificar tu propio rol o estado");
+      error.status = 400;
+      error.code = "CANNOT_UPDATE_SELF_ROLE_OR_STATE";
+      throw error;
+    }
+  }
+
+  if (typeof updates.email !== "undefined") {
+    const error = new Error("No se permite modificar el email del usuario");
+    error.status = 400;
+    error.code = "EMAIL_UPDATE_NOT_ALLOWED";
+    throw error;
+  }
+
+  const allowedEstados = ["activo", "bloqueado", "pendiente_email"];
+  const allowedRoles = ["ADMIN", "AGENTE"];
+
+  if (typeof updates.estado !== "undefined") {
+    if (!allowedEstados.includes(updates.estado)) {
+      const error = new Error("Estado inválido");
+      error.status = 400;
+      error.code = "INVALID_STATUS";
+      throw error;
+    }
+    usuario.estado = updates.estado;
+  }
+
+  if (typeof updates.rol !== "undefined") {
+    if (!allowedRoles.includes(updates.rol)) {
+      const error = new Error("Rol inválido");
+      error.status = 400;
+      error.code = "INVALID_ROLE";
+      throw error;
+    }
+    usuario.rol = updates.rol;
+  }
+
+  if (typeof updates.nombre !== "undefined") {
+    usuario.nombre = String(updates.nombre).trim();
+  }
+
+  await usuario.save();
+
+  return usuario;
+}
+
 module.exports = {
   createUser,
+  listUsers,
+  updateUser,
 };
