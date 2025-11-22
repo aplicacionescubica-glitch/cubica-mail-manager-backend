@@ -26,6 +26,15 @@ const transporter = nodemailer.createTransport({
   },
 });
 
+// Verifica la conexión SMTP al iniciar el servicio
+transporter.verify((err) => {
+  if (err) {
+    console.error("[Mail] Error al verificar conexión SMTP:", err.message);
+  } else {
+    console.log("[Mail] Conexión SMTP verificada correctamente");
+  }
+});
+
 // Construye la URL de verificación de correo para el usuario
 function buildEmailVerificationUrl(token) {
   const base = APP_WEB_URL.replace(/\/+$/, "");
@@ -34,10 +43,6 @@ function buildEmailVerificationUrl(token) {
 
 // Envía un correo de verificación al correo de la empresa con datos del usuario creado
 async function sendEmailVerification({ usuarioEmail, nombre, rol, token }) {
-  if (!transporter) {
-    throw new Error("[Mail] No hay transporter configurado");
-  }
-
   if (!COMPANY_VERIFICATION_EMAIL) {
     throw new Error("[Mail] Falta COMPANY_VERIFICATION_EMAIL en las variables de entorno");
   }
@@ -74,10 +79,120 @@ async function sendEmailVerification({ usuarioEmail, nombre, rol, token }) {
     `,
   };
 
-  await transporter.sendMail(mailOptions);
+  try {
+    const info = await transporter.sendMail(mailOptions);
+    console.log("[Mail] Correo de verificación enviado:", info.messageId);
+  } catch (err) {
+    console.error("[Mail] Error al enviar correo de verificación:", err.message);
+    if (err.response) {
+      console.error("[Mail] Respuesta SMTP:", err.response);
+    }
+    throw err;
+  }
+}
+
+// Construye el contenido de texto para el resumen de cotizaciones atrasadas
+function buildAtrasadasPlainText(cotizaciones) {
+  const encabezado = [
+    "Resumen de cotizaciones atrasadas",
+    "",
+    `Total: ${cotizaciones.length}`,
+    "",
+  ];
+
+  const lineas = cotizaciones.map((c, index) => {
+    const recibida = c.recibidaEn ? new Date(c.recibidaEn).toISOString() : "Sin fecha";
+    const asignada = c.asignadaA && c.asignadaA.nombre ? c.asignadaA.nombre : "Sin asignar";
+    return [
+      `#${index + 1}`,
+      `Asunto: ${c.asunto}`,
+      `Remitente: ${c.remitenteNombre || ""} <${c.remitenteEmail}>`,
+      `Recibida en: ${recibida}`,
+      `Estado: ${c.estado}`,
+      `Asignada a: ${asignada}`,
+      "",
+    ].join("\n");
+  });
+
+  return [...encabezado, ...lineas].join("\n");
+}
+
+// Construye el contenido HTML para el resumen de cotizaciones atrasadas
+function buildAtrasadasHtml(cotizaciones) {
+  const filas = cotizaciones
+    .map((c, index) => {
+      const recibida = c.recibidaEn ? new Date(c.recibidaEn).toISOString() : "Sin fecha";
+      const asignada = c.asignadaA && c.asignadaA.nombre ? c.asignadaA.nombre : "Sin asignar";
+      return `
+        <tr>
+          <td>${index + 1}</td>
+          <td>${c.asunto}</td>
+          <td>${c.remitenteNombre || ""} &lt;${c.remitenteEmail}&gt;</td>
+          <td>${recibida}</td>
+          <td>${c.estado}</td>
+          <td>${asignada}</td>
+        </tr>
+      `;
+    })
+    .join("");
+
+  return `
+    <p>Se han detectado cotizaciones atrasadas que llevan más tiempo del configurado sin respuesta.</p>
+    <p><strong>Total:</strong> ${cotizaciones.length}</p>
+    <table border="1" cellpadding="6" cellspacing="0">
+      <thead>
+        <tr>
+          <th>#</th>
+          <th>Asunto</th>
+          <th>Remitente</th>
+          <th>Recibida en</th>
+          <th>Estado</th>
+          <th>Asignada a</th>
+        </tr>
+      </thead>
+      <tbody>
+        ${filas}
+      </tbody>
+    </table>
+    <p>Revisa el panel de Cubica Mail Manager para gestionar estas cotizaciones.</p>
+  `;
+}
+
+// Envía un correo de alerta con el listado de cotizaciones atrasadas
+async function sendCotizacionesAtrasadasAlert({ cotizaciones }) {
+  if (!COMPANY_VERIFICATION_EMAIL) {
+    throw new Error("[Mail] Falta COMPANY_VERIFICATION_EMAIL en las variables de entorno");
+  }
+
+  if (!Array.isArray(cotizaciones) || cotizaciones.length === 0) {
+    return;
+  }
+
+  const plainText = buildAtrasadasPlainText(cotizaciones);
+  const html = buildAtrasadasHtml(cotizaciones);
+
+  const mailOptions = {
+    from: EMAIL_FROM,
+    to: COMPANY_VERIFICATION_EMAIL,
+    subject: "Alertas de cotizaciones atrasadas - Cubica Mail Manager",
+    text: plainText,
+    html,
+  };
+
+  try {
+    const info = await transporter.sendMail(mailOptions);
+    console.log("[Mail] Correo de alerta de cotizaciones atrasadas enviado:", info.messageId);
+  } catch (err) {
+    console.error("[Mail] Error al enviar correo de alerta de cotizaciones atrasadas:", err.message);
+    if (err.response) {
+      console.error("[Mail] Respuesta SMTP:", err.response);
+    }
+    throw err;
+  }
 }
 
 module.exports = {
   sendEmailVerification,
   buildEmailVerificationUrl,
+  sendCotizacionesAtrasadasAlert,
 };

@@ -3,7 +3,10 @@ const {
   marcarCotizacionEnGestion,
   marcarCotizacionRespondida,
   marcarCotizacionVencida,
+  findCotizacionesPendientesParaAlerta,
 } = require("./cotizacion.service");
+const { sendCotizacionesAtrasadasAlert } = require("../mail/mail.service");
+const { syncCotizacionesFromGmail } = require("../gmail/emailSync.service");
 
 // Limpia los datos de la cotización antes de enviarlos al cliente
 function sanitizeCotizacion(c) {
@@ -193,9 +196,89 @@ async function marcarVencida(req, res) {
   }
 }
 
+// Controlador para notificar cotizaciones atrasadas por email (RF-11)
+async function notificarCotizacionesPendientes(req, res) {
+  try {
+    const { minutos } = req.body || {};
+    const rawMin = typeof minutos === "number" || typeof minutos === "string" ? Number(minutos) : NaN;
+    const umbralMinutos = !Number.isNaN(rawMin) && rawMin > 0 ? rawMin : 1440;
+
+    const cotizaciones = await findCotizacionesPendientesParaAlerta({
+      minutos: umbralMinutos,
+    });
+
+    if (!cotizaciones.length) {
+      return res.status(200).json({
+        ok: true,
+        data: {
+          sent: false,
+          total: 0,
+          minutos: umbralMinutos,
+        },
+      });
+    }
+
+    await sendCotizacionesAtrasadasAlert({ cotizaciones });
+
+    return res.status(200).json({
+      ok: true,
+      data: {
+        sent: true,
+        total: cotizaciones.length,
+        minutos: umbralMinutos,
+      },
+    });
+  } catch (err) {
+    const status = err.status || 500;
+    const code = err.code || "INTERNAL_ERROR";
+
+    console.error("[notificarCotizacionesPendientes] error:", err);
+
+    return res.status(status).json({
+      ok: false,
+      error: code,
+      message: err.message || "Error al notificar cotizaciones pendientes",
+    });
+  }
+}
+
+// Controlador para sincronizar correos de Gmail como cotizaciones
+async function sincronizarCotizacionesDesdeGmail(req, res) {
+  try {
+    const { q, maxMessages } = req.body || {};
+
+    const max = typeof maxMessages === "number" || typeof maxMessages === "string"
+      ? Number(maxMessages)
+      : NaN;
+
+    const summary = await syncCotizacionesFromGmail({
+      q: q || undefined,
+      maxMessages: !Number.isNaN(max) && max > 0 ? max : 50,
+    });
+
+    return res.status(200).json({
+      ok: true,
+      data: summary,
+    });
+  } catch (err) {
+    const status = err.status || 500;
+    const code = err.code || "INTERNAL_ERROR";
+
+    console.error("[sincronizarCotizacionesDesdeGmail] error:", err);
+
+    return res.status(status).json({
+      ok: false,
+      error: code,
+      message: err.message || "Error al sincronizar cotizaciones desde Gmail",
+    });
+  }
+}
+
 module.exports = {
   listarCotizaciones,
   marcarEnGestion,
   marcarRespondida,
   marcarVencida,
+  notificarCotizacionesPendientes,
+  sincronizarCotizacionesDesdeGmail,
 };

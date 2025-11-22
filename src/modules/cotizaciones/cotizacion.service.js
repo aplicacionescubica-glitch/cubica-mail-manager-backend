@@ -1,3 +1,4 @@
+const mongoose = require("mongoose");
 const { Cotizacion, COTIZACION_ESTADOS } = require("./cotizacion.model");
 
 // Calcula minutos de diferencia entre dos fechas
@@ -105,6 +106,13 @@ async function listCotizaciones({ estado, asignadaA, page = 1, limit = 20 } = {}
 
 // Marca una cotización como en gestión y asignada a un usuario
 async function marcarCotizacionEnGestion({ cotizacionId, usuarioId }) {
+  if (!mongoose.isValidObjectId(cotizacionId)) {
+    const error = new Error("ID de cotización inválido");
+    error.status = 400;
+    error.code = "INVALID_QUOTE_ID";
+    throw error;
+  }
+
   const cotizacion = await Cotizacion.findById(cotizacionId);
 
   if (!cotizacion) {
@@ -131,6 +139,13 @@ async function marcarCotizacionEnGestion({ cotizacionId, usuarioId }) {
 
 // Marca una cotización como respondida y calcula tiempo de gestión
 async function marcarCotizacionRespondida({ cotizacionId, usuarioId, respondedAt }) {
+  if (!mongoose.isValidObjectId(cotizacionId)) {
+    const error = new Error("ID de cotización inválido");
+    error.status = 400;
+    error.code = "INVALID_QUOTE_ID";
+    throw error;
+  }
+
   const cotizacion = await Cotizacion.findById(cotizacionId);
 
   if (!cotizacion) {
@@ -163,6 +178,13 @@ async function marcarCotizacionRespondida({ cotizacionId, usuarioId, respondedAt
 
 // Marca una cotización como vencida
 async function marcarCotizacionVencida({ cotizacionId }) {
+  if (!mongoose.isValidObjectId(cotizacionId)) {
+    const error = new Error("ID de cotización inválido");
+    error.status = 400;
+    error.code = "INVALID_QUOTE_ID";
+    throw error;
+  }
+
   const cotizacion = await Cotizacion.findById(cotizacionId);
 
   if (!cotizacion) {
@@ -179,10 +201,29 @@ async function marcarCotizacionVencida({ cotizacionId }) {
   return cotizacion;
 }
 
+// Encuentra cotizaciones pendientes o en gestión sin respuesta que superan un umbral de minutos
+async function findCotizacionesPendientesParaAlerta({ minutos = 1440 } = {}) {
+  const ahora = new Date();
+  const limite = new Date(ahora.getTime() - minutos * 60000);
+
+  const query = {
+    estado: { $in: ["PENDIENTE", "EN_GESTION"] },
+    recibidaEn: { $lte: limite },
+    primeraRespuestaEn: null,
+  };
+
+  const items = await Cotizacion.find(query)
+    .sort({ recibidaEn: 1 })
+    .populate("asignadaA", "nombre email rol");
+
+  return items;
+}
+
 module.exports = {
   createCotizacionFromEmail,
   listCotizaciones,
   marcarCotizacionEnGestion,
   marcarCotizacionRespondida,
   marcarCotizacionVencida,
+  findCotizacionesPendientesParaAlerta,
 };

@@ -4,10 +4,29 @@ const {
   marcarEnGestion,
   marcarRespondida,
   marcarVencida,
+  notificarCotizacionesPendientes,
+  sincronizarCotizacionesDesdeGmail,
 } = require("./cotizacion.controller");
-const { requireAuth } = require("../../middlewares/auth.middleware");
+const { requireAuth, requireRole } = require("../../middlewares/auth.middleware");
 
 const router = express.Router();
+
+// Sincroniza correos de Gmail como cotizaciones (solo ADMIN)
+// Pensado para ser llamado desde Postman o un cron externo autenticado
+router.post(
+  "/sync-email",
+  requireAuth,
+  requireRole("ADMIN"),
+  sincronizarCotizacionesDesdeGmail
+);
+
+// Notifica por correo las cotizaciones atrasadas (RF-11), solo ADMIN
+router.post(
+  "/notificar-pendientes",
+  requireAuth,
+  requireRole("ADMIN"),
+  notificarCotizacionesPendientes
+);
 
 // Lista cotizaciones con filtros y orden por antigüedad
 router.get("/", requireAuth, listarCotizaciones);
