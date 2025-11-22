@@ -1,15 +1,22 @@
+// Carga de variables de entorno
 require("dotenv").config();
 
 const express = require("express");
 const cors = require("cors");
 const helmet = require("helmet");
 
+// Rutas de autenticación
+const authRoutes = require("./modules/auth/auth.routes");
+
+// Rutas de usuarios
+const userRoutes = require("./modules/users/user.routes");
+
 const app = express();
 
-// Config global
+// Configuración de CORS
 const CORS_ORIGIN = process.env.CORS_ORIGIN || "http://localhost:3000";
 
-// Middlewares base
+// Middlewares de seguridad y parseo de JSON
 app.use(helmet());
 app.use(
   cors({
@@ -19,7 +26,7 @@ app.use(
 );
 app.use(express.json());
 
-// Ruta de prueba
+// Ruta de verificación del estado del backend
 app.get("/api/health", (req, res) => {
   res.json({
     ok: true,
@@ -27,5 +34,11 @@ app.get("/api/health", (req, res) => {
     env: process.env.NODE_ENV || "development",
   });
 });
+
+// Rutas de autenticación
+app.use("/api/auth", authRoutes);
+
+// Rutas de usuarios (solo para administradores autenticados)
+app.use("/api/users", userRoutes);
 
 module.exports = app;
