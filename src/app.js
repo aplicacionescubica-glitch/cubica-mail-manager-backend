@@ -11,6 +11,9 @@ const authRoutes = require("./modules/auth/auth.routes");
 // Rutas de usuarios
 const userRoutes = require("./modules/users/user.routes");
 
+// Rutas de cotizaciones
+const cotizacionRoutes = require("./modules/cotizaciones/cotizacion.routes");
+
 const app = express();
 
 // Configuración de CORS
@@ -40,5 +43,8 @@ app.use("/api/auth", authRoutes);
 
 // Rutas de usuarios (solo para administradores autenticados)
 app.use("/api/users", userRoutes);
+
+// Rutas de cotizaciones
+app.use("/api/cotizaciones", cotizacionRoutes);
 
 module.exports = app;
