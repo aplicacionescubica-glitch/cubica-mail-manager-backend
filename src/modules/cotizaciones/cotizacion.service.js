@@ -1,5 +1,6 @@
 const mongoose = require("mongoose");
 const { Cotizacion, COTIZACION_ESTADOS } = require("./cotizacion.model");
+const { sendCotizacionReply } = require("../mail/mail.service");
 
 // Calcula minutos de diferencia entre dos fechas
 function diffMinutes(from, to) {
@@ -46,8 +47,8 @@ async function createCotizacionFromEmail(payload) {
     asunto: String(asunto).trim(),
     remitenteNombre: remitenteNombre ? String(remitenteNombre).trim() : "",
     remitenteEmail: normalizedRemitenteEmail,
-    para: Array.isArray(para) ? para : para ? [String(para)] : [],
-    cc: Array.isArray(cc) ? cc : cc ? [String(cc)] : [],
+    para: Array.isArray(para) ? para : [],
+    cc: Array.isArray(cc) ? cc : [],
     preview: preview ? String(preview).trim() : "",
     recibidaEn: new Date(recibidaEn),
     estado: "PENDIENTE",
@@ -83,15 +84,15 @@ async function listCotizaciones({ estado, asignadaA, page = 1, limit = 20 } = {}
     query.asignadaA = asignadaA;
   }
 
-  const pageNum = Math.max(1, parseInt(page, 10) || 1);
-  const pageSize = Math.max(1, Math.min(100, parseInt(limit, 10) || 20));
-  const skip = (pageNum - 1) * pageSize;
+  const pageNum = Number(page) || 1;
+  const limitNum = Number(limit) || 20;
+  const skip = (pageNum - 1) * limitNum;
 
   const [items, total] = await Promise.all([
     Cotizacion.find(query)
       .sort({ recibidaEn: 1 })
       .skip(skip)
-      .limit(pageSize)
+      .limit(limitNum)
       .populate("asignadaA", "nombre email rol"),
     Cotizacion.countDocuments(query),
   ]);
@@ -100,16 +101,23 @@ async function listCotizaciones({ estado, asignadaA, page = 1, limit = 20 } = {}
     items,
     total,
     page: pageNum,
-    limit: pageSize,
+    limit: limitNum,
   };
 }
 
-// Marca una cotización como en gestión y asignada a un usuario
+// Marca una cotización como en gestión y la asigna a un usuario
 async function marcarCotizacionEnGestion({ cotizacionId, usuarioId }) {
   if (!mongoose.isValidObjectId(cotizacionId)) {
     const error = new Error("ID de cotización inválido");
     error.status = 400;
     error.code = "INVALID_QUOTE_ID";
+    throw error;
+  }
+
+  if (!mongoose.isValidObjectId(usuarioId)) {
+    const error = new Error("ID de usuario inválido");
+    error.status = 400;
+    error.code = "INVALID_USER_ID";
     throw error;
   }
 
@@ -122,10 +130,10 @@ async function marcarCotizacionEnGestion({ cotizacionId, usuarioId }) {
     throw error;
   }
 
-  if (!usuarioId) {
-    const error = new Error("Usuario asignado requerido");
+  if (cotizacion.estado === "RESPONDIDA" || cotizacion.estado === "VENCIDA") {
+    const error = new Error("No se puede marcar en gestión una cotización cerrada");
     error.status = 400;
-    error.code = "ASSIGNEE_REQUIRED";
+    error.code = "QUOTE_CLOSED";
     throw error;
   }
 
@@ -159,15 +167,14 @@ async function marcarCotizacionRespondida({ cotizacionId, usuarioId, respondedAt
 
   if (!cotizacion.primeraRespuestaEn) {
     cotizacion.primeraRespuestaEn = respuestaEn;
-  }
-
-  if (!cotizacion.tiempoGestionMin && cotizacion.recibidaEn) {
-    cotizacion.tiempoGestionMin = diffMinutes(cotizacion.recibidaEn, cotizacion.primeraRespuestaEn);
+    if (cotizacion.recibidaEn) {
+      cotizacion.tiempoGestionMin = diffMinutes(cotizacion.recibidaEn, respuestaEn);
+    }
   }
 
   cotizacion.estado = "RESPONDIDA";
 
-  if (usuarioId && !cotizacion.asignadaA) {
+  if (usuarioId && mongoose.isValidObjectId(usuarioId)) {
     cotizacion.asignadaA = usuarioId;
   }
 
@@ -194,6 +201,13 @@ async function marcarCotizacionVencida({ cotizacionId }) {
     throw error;
   }
 
+  if (cotizacion.estado === "RESPONDIDA") {
+    const error = new Error("No se puede marcar como vencida una cotización respondida");
+    error.status = 400;
+    error.code = "QUOTE_ALREADY_RESPONDED";
+    throw error;
+  }
+
   cotizacion.estado = "VENCIDA";
 
   await cotizacion.save();
@@ -201,10 +215,17 @@ async function marcarCotizacionVencida({ cotizacionId }) {
   return cotizacion;
 }
 
-// Encuentra cotizaciones pendientes o en gestión sin respuesta que superan un umbral de minutos
-async function findCotizacionesPendientesParaAlerta({ minutos = 1440 } = {}) {
+// Busca cotizaciones pendientes o en gestión que ya superaron el umbral de minutos
+async function findCotizacionesPendientesParaAlerta({ minutosUmbral }) {
+  if (!minutosUmbral || minutosUmbral <= 0) {
+    const error = new Error("El umbral de minutos debe ser mayor que cero");
+    error.status = 400;
+    error.code = "INVALID_THRESHOLD";
+    throw error;
+  }
+
   const ahora = new Date();
-  const limite = new Date(ahora.getTime() - minutos * 60000);
+  const limite = new Date(ahora.getTime() - minutosUmbral * 60000);
 
   const query = {
     estado: { $in: ["PENDIENTE", "EN_GESTION"] },
@@ -219,6 +240,90 @@ async function findCotizacionesPendientesParaAlerta({ minutos = 1440 } = {}) {
   return items;
 }
 
+// Envía una respuesta de cotización y actualiza su estado
+async function responderCotizacion({
+  cotizacionId,
+  usuarioId,
+  mensajeHtml,
+  mensajeTexto,
+  asunto,
+  cc,
+}) {
+  if (!mongoose.isValidObjectId(cotizacionId)) {
+    const error = new Error("ID de cotización inválido");
+    error.status = 400;
+    error.code = "INVALID_QUOTE_ID";
+    throw error;
+  }
+
+  const cotizacion = await Cotizacion.findById(cotizacionId);
+
+  if (!cotizacion) {
+    const error = new Error("Cotización no encontrada");
+    error.status = 404;
+    error.code = "QUOTE_NOT_FOUND";
+    throw error;
+  }
+
+  const to = cotizacion.remitenteEmail;
+  if (!to) {
+    const error = new Error("La cotización no tiene remitenteEmail definido");
+    error.status = 400;
+    error.code = "QUOTE_MISSING_EMAIL";
+    throw error;
+  }
+
+  const subject =
+    asunto && String(asunto).trim().length > 0
+      ? String(asunto).trim()
+      : cotizacion.asunto
+      ? `Re: ${cotizacion.asunto}`
+      : "Respuesta a cotización";
+
+  let plainText = "";
+  if (mensajeTexto && String(mensajeTexto).trim().length > 0) {
+    plainText = String(mensajeTexto).trim();
+  } else if (mensajeHtml && String(mensajeHtml).trim().length > 0) {
+    plainText = String(mensajeHtml)
+      .replace(/<[^>]+>/g, " ")
+      .replace(/\s+/g, " ")
+      .trim();
+  }
+
+  const html =
+    mensajeHtml && String(mensajeHtml).trim().length > 0
+      ? String(mensajeHtml)
+      : undefined;
+
+  const inReplyTo = cotizacion.emailMessageId || undefined;
+
+  const info = await sendCotizacionReply({
+    to,
+    cc: Array.isArray(cc) ? cc : undefined,
+    subject,
+    text: plainText || undefined,
+    html,
+    inReplyTo,
+  });
+
+  const respondedAt = new Date();
+  const cotizacionActualizada = await marcarCotizacionRespondida({
+    cotizacionId,
+    usuarioId,
+    respondedAt,
+  });
+
+  return {
+    cotizacion: cotizacionActualizada,
+    emailInfo: {
+      messageId: info && info.messageId ? info.messageId : null,
+      accepted: info && info.accepted ? info.accepted : undefined,
+      rejected: info && info.rejected ? info.rejected : undefined,
+      response: info && info.response ? info.response : undefined,
+    },
+  };
+}
+
 module.exports = {
   createCotizacionFromEmail,
   listCotizaciones,
@@ -226,4 +331,5 @@ module.exports = {
   marcarCotizacionRespondida,
   marcarCotizacionVencida,
   findCotizacionesPendientesParaAlerta,
+  responderCotizacion,
 };

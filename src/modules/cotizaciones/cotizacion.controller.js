@@ -4,9 +4,13 @@ const {
   marcarCotizacionRespondida,
   marcarCotizacionVencida,
   findCotizacionesPendientesParaAlerta,
+  responderCotizacion: responderCotizacionService,
 } = require("./cotizacion.service");
 const { sendCotizacionesAtrasadasAlert } = require("../mail/mail.service");
-const { syncCotizacionesFromGmail } = require("../gmail/emailSync.service");
+const {
+  syncCotizacionesFromGmail,
+  syncRespuestasFromGmail,
+} = require("../gmail/emailSync.service");
 
 // Limpia los datos de la cotización antes de enviarlos al cliente
 function sanitizeCotizacion(c) {
@@ -17,11 +21,10 @@ function sanitizeCotizacion(c) {
     asunto: c.asunto,
     remitenteNombre: c.remitenteNombre,
     remitenteEmail: c.remitenteEmail,
-    para: c.para,
-    cc: c.cc,
+    para: c.para || [],
+    cc: c.cc || [],
     preview: c.preview,
     recibidaEn: c.recibidaEn,
-    primeraRespuestaEn: c.primeraRespuestaEn,
     estado: c.estado,
     asignadaA: c.asignadaA
       ? {
@@ -31,14 +34,15 @@ function sanitizeCotizacion(c) {
           rol: c.asignadaA.rol,
         }
       : null,
+    primeraRespuestaEn: c.primeraRespuestaEn,
     tiempoGestionMin: c.tiempoGestionMin,
-    notasInternas: c.notasInternas,
+    notasInternas: c.notasInternas || "",
     createdAt: c.createdAt,
     updatedAt: c.updatedAt,
   };
 }
 
-// Controlador para listar cotizaciones con filtros y orden por antigüedad
+// Lista cotizaciones con filtros y orden por antigüedad
 async function listarCotizaciones(req, res) {
   try {
     const { estado, asignadaA, page, limit } = req.query;
@@ -74,7 +78,7 @@ async function listarCotizaciones(req, res) {
   }
 }
 
-// Controlador para marcar una cotización como en gestión
+// Marca una cotización como EN_GESTION
 async function marcarEnGestion(req, res) {
   try {
     const { id } = req.params;
@@ -115,7 +119,7 @@ async function marcarEnGestion(req, res) {
   }
 }
 
-// Controlador para marcar una cotización como respondida
+// Marca una cotización como RESPONDIDA
 async function marcarRespondida(req, res) {
   try {
     const { id } = req.params;
@@ -158,6 +162,53 @@ async function marcarRespondida(req, res) {
   }
 }
 
+// Responde una cotización y actualiza su estado y tiempos
+async function responderCotizacion(req, res) {
+  try {
+    const { id } = req.params;
+    const { mensajeHtml, mensajeTexto, asunto, cc } = req.body || {};
+
+    if (!id) {
+      return res.status(400).json({
+        ok: false,
+        error: "MISSING_QUOTE_ID",
+        message: "El id de la cotización es obligatorio",
+      });
+    }
+
+    const usuarioId = req.user ? req.user.id : null;
+
+    const result = await responderCotizacionService({
+      cotizacionId: id,
+      usuarioId,
+      mensajeHtml,
+      mensajeTexto,
+      asunto,
+      cc,
+    });
+
+    return res.status(200).json({
+      ok: true,
+      data: {
+        cotizacion: sanitizeCotizacion(result.cotizacion),
+        emailInfo: result.emailInfo || null,
+      },
+    });
+  } catch (err) {
+    const status = err.status || 500;
+    const code = err.code || "INTERNAL_ERROR";
+
+    return res.status(status).json({
+      ok: false,
+      error: code,
+      message:
+        status === 500
+          ? "Error interno del servidor"
+          : err.message || "Error al responder la cotización",
+    });
+  }
+}
+
 // Controlador para marcar una cotización como vencida
 async function marcarVencida(req, res) {
   try {
@@ -196,24 +247,22 @@ async function marcarVencida(req, res) {
   }
 }
 
-// Controlador para notificar cotizaciones atrasadas por email (RF-11)
+// Notifica por correo las cotizaciones atrasadas
 async function notificarCotizacionesPendientes(req, res) {
   try {
-    const { minutos } = req.body || {};
-    const rawMin = typeof minutos === "number" || typeof minutos === "string" ? Number(minutos) : NaN;
-    const umbralMinutos = !Number.isNaN(rawMin) && rawMin > 0 ? rawMin : 1440;
+    const { minutosUmbral } = req.body || {};
+    const umbral = minutosUmbral ? Number(minutosUmbral) : 60;
 
     const cotizaciones = await findCotizacionesPendientesParaAlerta({
-      minutos: umbralMinutos,
+      minutosUmbral: umbral,
     });
 
     if (!cotizaciones.length) {
       return res.status(200).json({
         ok: true,
         data: {
-          sent: false,
-          total: 0,
-          minutos: umbralMinutos,
+          totalAtrasadas: 0,
+          emailEnviado: false,
         },
       });
     }
@@ -223,42 +272,46 @@ async function notificarCotizacionesPendientes(req, res) {
     return res.status(200).json({
       ok: true,
       data: {
-        sent: true,
-        total: cotizaciones.length,
-        minutos: umbralMinutos,
+        totalAtrasadas: cotizaciones.length,
+        emailEnviado: true,
       },
     });
   } catch (err) {
     const status = err.status || 500;
     const code = err.code || "INTERNAL_ERROR";
 
-    console.error("[notificarCotizacionesPendientes] error:", err);
-
     return res.status(status).json({
       ok: false,
       error: code,
-      message: err.message || "Error al notificar cotizaciones pendientes",
+      message:
+        status === 500
+          ? "Error interno del servidor"
+          : err.message || "Error al notificar cotizaciones atrasadas",
     });
   }
 }
 
-// Controlador para sincronizar correos de Gmail como cotizaciones
+// Sincroniza cotizaciones desde Gmail (entrantes y respuestas enviadas)
 async function sincronizarCotizacionesDesdeGmail(req, res) {
   try {
     const { q, maxMessages } = req.body || {};
 
-    const max = typeof maxMessages === "number" || typeof maxMessages === "string"
-      ? Number(maxMessages)
-      : NaN;
-
-    const summary = await syncCotizacionesFromGmail({
+    const inboxSummary = await syncCotizacionesFromGmail({
       q: q || undefined,
-      maxMessages: !Number.isNaN(max) && max > 0 ? max : 50,
+      maxMessages: maxMessages ? Number(maxMessages) : 20,
+    });
+
+    const sentSummary = await syncRespuestasFromGmail({
+      q: undefined,
+      maxMessages: maxMessages ? Number(maxMessages) : 50,
     });
 
     return res.status(200).json({
       ok: true,
-      data: summary,
+      data: {
+        inbox: inboxSummary,
+        sent: sentSummary,
+      },
     });
   } catch (err) {
     const status = err.status || 500;
@@ -279,6 +332,7 @@ module.exports = {
   marcarEnGestion,
   marcarRespondida,
   marcarVencida,
+  responderCotizacion,
   notificarCotizacionesPendientes,
   sincronizarCotizacionesDesdeGmail,
 };

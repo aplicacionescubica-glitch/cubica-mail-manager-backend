@@ -16,6 +16,7 @@ if (!COMPANY_VERIFICATION_EMAIL) {
   console.warn("[Mail] Falta la variable COMPANY_VERIFICATION_EMAIL");
 }
 
+// Crea el transporter SMTP reutilizable
 const transporter = nodemailer.createTransport({
   host: SMTP_HOST,
   port: SMTP_PORT,
@@ -26,16 +27,7 @@ const transporter = nodemailer.createTransport({
   },
 });
 
-// Verifica la conexión SMTP al iniciar el servicio
-transporter.verify((err) => {
-  if (err) {
-    console.error("[Mail] Error al verificar conexión SMTP:", err.message);
-  } else {
-    console.log("[Mail] Conexión SMTP verificada correctamente");
-  }
-});
-
-// Construye la URL de verificación de correo para el usuario
+// Construye la URL de verificación de usuario
 function buildEmailVerificationUrl(token) {
   const base = APP_WEB_URL.replace(/\/+$/, "");
   return `${base}/verify-email?token=${encodeURIComponent(token)}`;
@@ -49,39 +41,42 @@ async function sendEmailVerification({ usuarioEmail, nombre, rol, token }) {
 
   const verifyUrl = buildEmailVerificationUrl(token);
 
+  const textLines = [
+    "Se ha creado una nueva cuenta en Cubica Mail Manager.",
+    "",
+    `Nombre: ${nombre}`,
+    `Email definido en el sistema: ${usuarioEmail}`,
+    `Rol: ${rol}`,
+    "",
+    "Para activar esta cuenta y permitir que el usuario inicie sesión, utiliza el siguiente enlace de verificación:",
+    "",
+    verifyUrl,
+    "",
+    "Si tú no realizaste esta acción, revisa la configuración del sistema.",
+  ];
+
+  const html = `
+    <p>Se ha creado una nueva cuenta en <strong>Cubica Mail Manager</strong>.</p>
+    <p><strong>Nombre:</strong> ${nombre}<br/>
+    <strong>Email definido en el sistema:</strong> ${usuarioEmail}<br/>
+    <strong>Rol:</strong> ${rol}</p>
+    <p>Para activar esta cuenta y permitir que el usuario inicie sesión, utiliza el siguiente enlace de verificación:</p>
+    <p><a href="${verifyUrl}" target="_blank" rel="noopener noreferrer">${verifyUrl}</a></p>
+    <p>Si tú no realizaste esta acción, revisa la configuración del sistema.</p>
+  `;
+
   const mailOptions = {
     from: EMAIL_FROM,
     to: COMPANY_VERIFICATION_EMAIL,
     subject: "Nueva cuenta para verificar - Cubica Mail Manager",
-    text: [
-      "Se ha creado una nueva cuenta en Cubica Mail Manager.",
-      "",
-      `Nombre: ${nombre}`,
-      `Email definido en el sistema: ${usuarioEmail}`,
-      `Rol: ${rol}`,
-      "",
-      "Para activar esta cuenta y permitir que el usuario inicie sesión, utiliza el siguiente enlace de verificación:",
-      "",
-      verifyUrl,
-      "",
-      "Si tú no esperabas este correo, puedes ignorarlo.",
-    ].join("\n"),
-    html: `
-      <p>Se ha creado una nueva cuenta en <strong>Cubica Mail Manager</strong>.</p>
-      <ul>
-        <li><strong>Nombre:</strong> ${nombre}</li>
-        <li><strong>Email definido en el sistema:</strong> ${usuarioEmail}</li>
-        <li><strong>Rol:</strong> ${rol}</li>
-      </ul>
-      <p>Para activar esta cuenta y permitir que el usuario inicie sesión, haz clic en el siguiente enlace:</p>
-      <p><a href="${verifyUrl}" target="_blank" rel="noopener noreferrer">${verifyUrl}</a></p>
-      <p>Si tú no esperabas este correo, puedes ignorarlo.</p>
-    `,
+    text: textLines.join("\n"),
+    html,
   };
 
   try {
     const info = await transporter.sendMail(mailOptions);
     console.log("[Mail] Correo de verificación enviado:", info.messageId);
+    return info;
   } catch (err) {
     console.error("[Mail] Error al enviar correo de verificación:", err.message);
     if (err.response) {
@@ -101,8 +96,12 @@ function buildAtrasadasPlainText(cotizaciones) {
   ];
 
   const lineas = cotizaciones.map((c, index) => {
-    const recibida = c.recibidaEn ? new Date(c.recibidaEn).toISOString() : "Sin fecha";
-    const asignada = c.asignadaA && c.asignadaA.nombre ? c.asignadaA.nombre : "Sin asignar";
+    const recibida = c.recibidaEn ? new Date(c.recibidaEn).toLocaleString() : "N/D";
+    const asignada =
+      c.asignadaA && c.asignadaA.nombre
+        ? `${c.asignadaA.nombre} <${c.asignadaA.email}>`
+        : "Sin asignar";
+
     return [
       `#${index + 1}`,
       `Asunto: ${c.asunto}`,
@@ -121,8 +120,12 @@ function buildAtrasadasPlainText(cotizaciones) {
 function buildAtrasadasHtml(cotizaciones) {
   const filas = cotizaciones
     .map((c, index) => {
-      const recibida = c.recibidaEn ? new Date(c.recibidaEn).toISOString() : "Sin fecha";
-      const asignada = c.asignadaA && c.asignadaA.nombre ? c.asignadaA.nombre : "Sin asignar";
+      const recibida = c.recibidaEn ? new Date(c.recibidaEn).toLocaleString() : "N/D";
+      const asignada =
+        c.asignadaA && c.asignadaA.nombre
+          ? `${c.asignadaA.nombre} &lt;${c.asignadaA.email}&gt;`
+          : "Sin asignar";
+
       return `
         <tr>
           <td>${index + 1}</td>
@@ -137,11 +140,11 @@ function buildAtrasadasHtml(cotizaciones) {
     .join("");
 
   return `
-    <p>Se han detectado cotizaciones atrasadas que llevan más tiempo del configurado sin respuesta.</p>
+    <p>Se han detectado las siguientes cotizaciones atrasadas en Cubica Mail Manager:</p>
     <p><strong>Total:</strong> ${cotizaciones.length}</p>
-    <table border="1" cellpadding="6" cellspacing="0">
+    <table border="1" cellpadding="6" cellspacing="0" style="border-collapse: collapse; font-size: 14px;">
       <thead>
-        <tr>
+        <tr style="background:#f2f2f2;">
           <th>#</th>
           <th>Asunto</th>
           <th>Remitente</th>
@@ -154,11 +157,11 @@ function buildAtrasadasHtml(cotizaciones) {
         ${filas}
       </tbody>
     </table>
-    <p>Revisa el panel de Cubica Mail Manager para gestionar estas cotizaciones.</p>
+    <p>Revisa estas cotizaciones en el sistema para darles seguimiento.</p>
   `;
 }
 
-// Envía un correo de alerta con el listado de cotizaciones atrasadas
+// Envía un correo de alerta con el resumen de cotizaciones atrasadas
 async function sendCotizacionesAtrasadasAlert({ cotizaciones }) {
   if (!COMPANY_VERIFICATION_EMAIL) {
     throw new Error("[Mail] Falta COMPANY_VERIFICATION_EMAIL en las variables de entorno");
@@ -182,8 +185,39 @@ async function sendCotizacionesAtrasadasAlert({ cotizaciones }) {
   try {
     const info = await transporter.sendMail(mailOptions);
     console.log("[Mail] Correo de alerta de cotizaciones atrasadas enviado:", info.messageId);
+    return info;
   } catch (err) {
     console.error("[Mail] Error al enviar correo de alerta de cotizaciones atrasadas:", err.message);
+    if (err.response) {
+      console.error("[Mail] Respuesta SMTP:", err.response);
+    }
+    throw err;
+  }
+}
+
+// Envía una respuesta de cotización al remitente
+async function sendCotizacionReply({ to, cc, subject, text, html, inReplyTo }) {
+  if (!to) {
+    throw new Error("[Mail] Falta el destinatario para la respuesta de cotización");
+  }
+
+  const mailOptions = {
+    from: EMAIL_FROM,
+    to,
+    cc: cc && cc.length ? cc : undefined,
+    subject,
+    text,
+    html,
+    inReplyTo: inReplyTo || undefined,
+    references: inReplyTo ? [inReplyTo] : undefined,
+  };
+
+  try {
+    const info = await transporter.sendMail(mailOptions);
+    console.log("[Mail] Respuesta de cotización enviada:", info.messageId);
+    return info;
+  } catch (err) {
+    console.error("[Mail] Error al enviar respuesta de cotización:", err.message);
     if (err.response) {
       console.error("[Mail] Respuesta SMTP:", err.response);
     }
@@ -195,4 +229,5 @@ module.exports = {
   sendEmailVerification,
   buildEmailVerificationUrl,
   sendCotizacionesAtrasadasAlert,
+  sendCotizacionReply,
 };

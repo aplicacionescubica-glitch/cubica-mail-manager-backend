@@ -1,6 +1,7 @@
 const jwt = require("jsonwebtoken");
 
 const ACCESS_TOKEN_SECRET = process.env.JWT_ACCESS_SECRET;
+const CRON_SECRET = process.env.CRON_SECRET || "";
 
 if (!ACCESS_TOKEN_SECRET) {
   throw new Error("[AuthMiddleware] Falta la variable JWT_ACCESS_SECRET");
@@ -74,7 +75,29 @@ function requireRole(requiredRole) {
   };
 }
 
+// Middleware para proteger rutas llamadas por cron usando un secreto
+function requireCronSecret(req, res, next) {
+  // Si no hay CRON_SECRET configurado, no se aplica restricción
+  if (!CRON_SECRET) {
+    console.warn("[Cron] CRON_SECRET no definido, requireCronSecret no aplica restricción");
+    return next();
+  }
+
+  const headerSecret = req.headers["x-cron-secret"];
+
+  if (!headerSecret || headerSecret !== CRON_SECRET) {
+    return res.status(401).json({
+      ok: false,
+      error: "CRON_AUTH_REQUIRED",
+      message: "Acceso no autorizado para tarea programada",
+    });
+  }
+
+  return next();
+}
+
 module.exports = {
   requireAuth,
   requireRole,
+  requireCronSecret,
 };
