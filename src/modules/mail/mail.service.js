@@ -1,4 +1,5 @@
 const nodemailer = require("nodemailer");
+const { sendGmailMessage } = require("../gmail/gmail.client");
 
 const SMTP_HOST = process.env.SMTP_HOST;
 const SMTP_PORT = Number(process.env.SMTP_PORT || 587);
@@ -7,25 +8,87 @@ const SMTP_PASS = process.env.SMTP_PASS;
 const EMAIL_FROM = process.env.EMAIL_FROM || "no-reply@example.com";
 const APP_WEB_URL = process.env.APP_WEB_URL || "http://localhost:3000";
 const COMPANY_VERIFICATION_EMAIL = process.env.COMPANY_VERIFICATION_EMAIL;
-
-if (!SMTP_HOST || !SMTP_USER || !SMTP_PASS) {
-  console.warn("[Mail] Faltan variables SMTP_HOST, SMTP_USER o SMTP_PASS");
-}
+const USE_GMAIL_API_FOR_MAIL = process.env.USE_GMAIL_API_FOR_MAIL === "true";
 
 if (!COMPANY_VERIFICATION_EMAIL) {
   console.warn("[Mail] Falta la variable COMPANY_VERIFICATION_EMAIL");
 }
 
-// Crea el transporter SMTP reutilizable
-const transporter = nodemailer.createTransport({
-  host: SMTP_HOST,
-  port: SMTP_PORT,
-  secure: SMTP_PORT === 465,
-  auth: {
-    user: SMTP_USER,
-    pass: SMTP_PASS,
-  },
-});
+if (!USE_GMAIL_API_FOR_MAIL && (!SMTP_HOST || !SMTP_USER || !SMTP_PASS)) {
+  console.warn("[Mail] Faltan variables SMTP_HOST, SMTP_USER o SMTP_PASS y USE_GMAIL_API_FOR_MAIL es false");
+}
+
+// Crea el transporter SMTP reutilizable solo si no usamos Gmail API
+let transporter = null;
+
+if (!USE_GMAIL_API_FOR_MAIL && SMTP_HOST && SMTP_USER && SMTP_PASS) {
+  transporter = nodemailer.createTransport({
+    host: SMTP_HOST,
+    port: SMTP_PORT,
+    secure: SMTP_PORT === 465,
+    auth: {
+      user: SMTP_USER,
+      pass: SMTP_PASS,
+    },
+  });
+
+  transporter.verify((err) => {
+    if (err) {
+      console.error("[Mail] Error al verificar conexión SMTP:", err.message);
+    } else {
+      console.log("[Mail] Conexión SMTP verificada correctamente");
+    }
+  });
+}
+
+// Envía un correo usando Gmail API o SMTP según configuración
+async function sendMail({ to, cc, subject, text, html, inReplyTo, references }) {
+  if (!to || (Array.isArray(to) && to.length === 0)) {
+    throw new Error("[Mail] Campo 'to' es obligatorio para enviar correo");
+  }
+
+  // Rama Gmail API
+  if (USE_GMAIL_API_FOR_MAIL) {
+    const info = await sendGmailMessage({
+      from: EMAIL_FROM,
+      to,
+      cc,
+      subject,
+      text,
+      html,
+    });
+
+    const id = info && (info.id || info.messageId);
+    console.log("[Mail] Correo enviado vía Gmail API:", id || "(sin id)");
+    return info;
+  }
+
+  // Rama SMTP
+  if (!transporter) {
+    throw new Error("[Mail] No hay transporte SMTP disponible y USE_GMAIL_API_FOR_MAIL es false");
+  }
+
+  const mailOptions = {
+    from: EMAIL_FROM,
+    to,
+    cc: cc && cc.length ? cc : undefined,
+    subject,
+    text,
+    html,
+  };
+
+  // Estos headers solo aplican a SMTP
+  if (inReplyTo) {
+    mailOptions.inReplyTo = inReplyTo;
+  }
+  if (references && references.length) {
+    mailOptions.references = references;
+  }
+
+  const info = await transporter.sendMail(mailOptions);
+  console.log("[Mail] Correo enviado vía SMTP:", info.messageId);
+  return info;
+}
 
 // Construye la URL de verificación de usuario
 function buildEmailVerificationUrl(token) {
@@ -65,22 +128,18 @@ async function sendEmailVerification({ usuarioEmail, nombre, rol, token }) {
     <p>Si tú no realizaste esta acción, revisa la configuración del sistema.</p>
   `;
 
-  const mailOptions = {
-    from: EMAIL_FROM,
-    to: COMPANY_VERIFICATION_EMAIL,
-    subject: "Nueva cuenta para verificar - Cubica Mail Manager",
-    text: textLines.join("\n"),
-    html,
-  };
-
   try {
-    const info = await transporter.sendMail(mailOptions);
-    console.log("[Mail] Correo de verificación enviado:", info.messageId);
+    const info = await sendMail({
+      to: COMPANY_VERIFICATION_EMAIL,
+      subject: "Nueva cuenta para verificar - Cubica Mail Manager",
+      text: textLines.join("\n"),
+      html,
+    });
     return info;
   } catch (err) {
     console.error("[Mail] Error al enviar correo de verificación:", err.message);
     if (err.response) {
-      console.error("[Mail] Respuesta SMTP:", err.response);
+      console.error("[Mail] Respuesta de envío:", err.response);
     }
     throw err;
   }
@@ -174,22 +233,18 @@ async function sendCotizacionesAtrasadasAlert({ cotizaciones }) {
   const plainText = buildAtrasadasPlainText(cotizaciones);
   const html = buildAtrasadasHtml(cotizaciones);
 
-  const mailOptions = {
-    from: EMAIL_FROM,
-    to: COMPANY_VERIFICATION_EMAIL,
-    subject: "Alertas de cotizaciones atrasadas - Cubica Mail Manager",
-    text: plainText,
-    html,
-  };
-
   try {
-    const info = await transporter.sendMail(mailOptions);
-    console.log("[Mail] Correo de alerta de cotizaciones atrasadas enviado:", info.messageId);
+    const info = await sendMail({
+      to: COMPANY_VERIFICATION_EMAIL,
+      subject: "Alertas de cotizaciones atrasadas - Cubica Mail Manager",
+      text: plainText,
+      html,
+    });
     return info;
   } catch (err) {
     console.error("[Mail] Error al enviar correo de alerta de cotizaciones atrasadas:", err.message);
     if (err.response) {
-      console.error("[Mail] Respuesta SMTP:", err.response);
+      console.error("[Mail] Respuesta de envío:", err.response);
     }
     throw err;
   }
@@ -201,25 +256,23 @@ async function sendCotizacionReply({ to, cc, subject, text, html, inReplyTo }) {
     throw new Error("[Mail] Falta el destinatario para la respuesta de cotización");
   }
 
-  const mailOptions = {
-    from: EMAIL_FROM,
-    to,
-    cc: cc && cc.length ? cc : undefined,
-    subject,
-    text,
-    html,
-    inReplyTo: inReplyTo || undefined,
-    references: inReplyTo ? [inReplyTo] : undefined,
-  };
+  const references = inReplyTo ? [inReplyTo] : undefined;
 
   try {
-    const info = await transporter.sendMail(mailOptions);
-    console.log("[Mail] Respuesta de cotización enviada:", info.messageId);
+    const info = await sendMail({
+      to,
+      cc,
+      subject,
+      text,
+      html,
+      inReplyTo,
+      references,
+    });
     return info;
   } catch (err) {
     console.error("[Mail] Error al enviar respuesta de cotización:", err.message);
     if (err.response) {
-      console.error("[Mail] Respuesta SMTP:", err.response);
+      console.error("[Mail] Respuesta de envío:", err.response);
     }
     throw err;
   }
