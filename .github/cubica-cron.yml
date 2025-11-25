@@ -17,7 +17,7 @@ jobs:
           curl -X POST \
             -H "Content-Type: application/json" \
             -H "x-cron-secret: ${{ secrets.CRON_SECRET }}" \
-            "${{ secrets.RENDER_BASE_URL }}/api/cotizaciones/sync-email" \
+            "${{ secrets.RENDER_BASE_URL }}/api/cotizaciones/sync-email/cron" \
             -d '{"maxMessages":50}'
 
       - name: Llamar notificar-pendientes (cada 30 min)
@@ -26,7 +26,7 @@ jobs:
           curl -X POST \
             -H "Content-Type: application/json" \
             -H "x-cron-secret: ${{ secrets.CRON_SECRET }}" \
-            "${{ secrets.RENDER_BASE_URL }}/api/cotizaciones/notificar-pendientes" \
+            "${{ secrets.RENDER_BASE_URL }}/api/cotizaciones/notificar-pendientes/cron" \
             -d '{"minutosUmbral":1440}'
 
       - name: Ejecutar ambos jobs (ejecución manual)
@@ -37,11 +37,11 @@ jobs:
           curl -X POST \
             -H "Content-Type: application/json" \
             -H "x-cron-secret: ${{ secrets.CRON_SECRET }}" \
-            "${{ secrets.RENDER_BASE_URL }}/api/cotizaciones/sync-email" \
+            "${{ secrets.RENDER_BASE_URL }}/api/cotizaciones/sync-email/cron" \
             -d '{"maxMessages":50}'
 
           curl -X POST \
             -H "Content-Type: application/json" \
             -H "x-cron-secret: ${{ secrets.CRON_SECRET }}" \
-            "${{ secrets.RENDER_BASE_URL }}/api/cotizaciones/notificar-pendientes" \
+            "${{ secrets.RENDER_BASE_URL }}/api/cotizaciones/notificar-pendientes/cron" \
             -d '{"minutosUmbral":1440}'

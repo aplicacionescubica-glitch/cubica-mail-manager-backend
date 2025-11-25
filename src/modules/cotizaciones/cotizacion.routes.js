@@ -8,10 +8,29 @@ const {
   sincronizarCotizacionesDesdeGmail,
   responderCotizacion,
 } = require("./cotizacion.controller");
-const { requireAuth, requireRole } = require("../../middlewares/auth.middleware");
+const {
+  requireAuth,
+  requireRole,
+  requireCronSecret,
+} = require("../../middlewares/auth.middleware");
 
 const router = express.Router();
 
+/* Rutas para tareas automáticas (cron) */
+// Estas rutas se usan solo desde GitHub Actions u otro scheduler externo
+router.post(
+  "/sync-email/cron",
+  requireCronSecret,
+  sincronizarCotizacionesDesdeGmail
+);
+
+router.post(
+  "/notificar-pendientes/cron",
+  requireCronSecret,
+  notificarCotizacionesPendientes
+);
+
+/* Rutas de administración protegidas por JWT y rol ADMIN */
 // Sincroniza correos de Gmail como cotizaciones (solo ADMIN)
 router.post(
   "/sync-email",
@@ -28,6 +47,7 @@ router.post(
   notificarCotizacionesPendientes
 );
 
+/* Rutas de gestión de cotizaciones para usuarios autenticados */
 // Lista cotizaciones con filtros y orden por antigüedad
 router.get("/", requireAuth, listarCotizaciones);
 
