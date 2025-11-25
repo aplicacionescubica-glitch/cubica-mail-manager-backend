@@ -1,0 +1,47 @@
+name: Cubica Mail Manager Cron
+
+on:
+  schedule:
+    - cron: "*/10 * * * *"
+    - cron: "*/30 * * * *"
+  workflow_dispatch:
+
+jobs:
+  cron-jobs:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Llamar sync-email (cada 10 min)
+        if: github.event_name == 'schedule' && github.event.schedule == '*/10 * * * *'
+        run: |
+          curl -X POST \
+            -H "Content-Type: application/json" \
+            -H "x-cron-secret: ${{ secrets.CRON_SECRET }}" \
+            "${{ secrets.RENDER_BASE_URL }}/api/cotizaciones/sync-email/cron" \
+            -d '{"maxMessages":50}'
+
+      - name: Llamar notificar-pendientes (cada 30 min)
+        if: github.event_name == 'schedule' && github.event.schedule == '*/30 * * * *'
+        run: |
+          curl -X POST \
+            -H "Content-Type: application/json" \
+            -H "x-cron-secret: ${{ secrets.CRON_SECRET }}" \
+            "${{ secrets.RENDER_BASE_URL }}/api/cotizaciones/notificar-pendientes/cron" \
+            -d '{"minutosUmbral":1440}'
+
+      - name: Ejecutar ambos jobs (ejecución manual)
+        if: github.event_name == 'workflow_dispatch'
+        run: |
+          echo "Llamando sync-email y notificar-pendientes manualmente"
+
+          curl -X POST \
+            -H "Content-Type: application/json" \
+            -H "x-cron-secret: ${{ secrets.CRON_SECRET }}" \
+            "${{ secrets.RENDER_BASE_URL }}/api/cotizaciones/sync-email/cron" \
+            -d '{"maxMessages":50}'
+
+          curl -X POST \
+            -H "Content-Type: application/json" \
+            -H "x-cron-secret: ${{ secrets.CRON_SECRET }}" \
+            "${{ secrets.RENDER_BASE_URL }}/api/cotizaciones/notificar-pendientes/cron" \
+            -d '{"minutosUmbral":1440}'
