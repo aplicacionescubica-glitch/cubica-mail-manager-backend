@@ -45,15 +45,17 @@ if (!USE_GMAIL_API_FOR_MAIL && SMTP_HOST && SMTP_USER && SMTP_PASS) {
 }
 
 // Envía un correo usando Gmail API o SMTP según configuración
-async function sendMail({ to, cc, subject, text, html, inReplyTo, references }) {
+async function sendMail({ to, cc, subject, text, html, inReplyTo, references, from }) {
   if (!to || (Array.isArray(to) && to.length === 0)) {
     throw new Error("[Mail] Campo 'to' es obligatorio para enviar correo");
   }
 
+  const fromHeader = from || EMAIL_FROM;
+
   // Rama Gmail API
   if (USE_GMAIL_API_FOR_MAIL) {
     const info = await sendGmailMessage({
-      from: EMAIL_FROM,
+      from: fromHeader,
       to,
       cc,
       subject,
@@ -72,7 +74,7 @@ async function sendMail({ to, cc, subject, text, html, inReplyTo, references }) 
   }
 
   const mailOptions = {
-    from: EMAIL_FROM,
+    from: fromHeader,
     to,
     cc: cc && cc.length ? cc : undefined,
     subject,
@@ -137,6 +139,7 @@ async function sendEmailVerification({ usuarioEmail, nombre, rol, token }) {
       subject: "Nueva cuenta para verificar - Cubica Mail Manager",
       text: textLines.join("\n"),
       html,
+      // Aquí dejamos que use EMAIL_FROM por defecto
     });
     return info;
   } catch (err) {
@@ -246,6 +249,7 @@ async function sendCotizacionesAtrasadasAlert({ cotizaciones }) {
 
   try {
     const info = await sendMail({
+      from: COMPANY_VERIFICATION_EMAIL,
       to: PENDING_ALERTS_TO_EMAIL,
       cc,
       subject,
