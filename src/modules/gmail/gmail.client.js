@@ -1,5 +1,6 @@
 const { google } = require("googleapis");
 
+// Cuenta principal (cotizaciones)
 const GMAIL_CLIENT_ID = process.env.GMAIL_CLIENT_ID;
 const GMAIL_CLIENT_SECRET = process.env.GMAIL_CLIENT_SECRET;
 const GMAIL_REFRESH_TOKEN = process.env.GMAIL_REFRESH_TOKEN;
@@ -9,6 +10,10 @@ const GMAIL_REDIRECT_URI =
   process.env.GMAIL_REDIRECT_URI || "https://developers.google.com/oauthplayground";
 
 // Cuenta de alertas (administrativa)
+const ALERT_GMAIL_CLIENT_ID =
+  process.env.ALERT_GMAIL_CLIENT_ID || GMAIL_CLIENT_ID;
+const ALERT_GMAIL_CLIENT_SECRET =
+  process.env.ALERT_GMAIL_CLIENT_SECRET || GMAIL_CLIENT_SECRET;
 const ALERT_GMAIL_ACCOUNT_EMAIL = process.env.ALERT_GMAIL_ACCOUNT_EMAIL;
 const ALERT_GMAIL_REFRESH_TOKEN = process.env.ALERT_GMAIL_REFRESH_TOKEN;
 
@@ -20,15 +25,17 @@ if (!GMAIL_REFRESH_TOKEN) {
   console.warn("[Gmail] Falta GMAIL_REFRESH_TOKEN para la cuenta principal");
 }
 
-if (!ALERT_GMAIL_REFRESH_TOKEN || !ALERT_GMAIL_ACCOUNT_EMAIL) {
-  console.warn("[Gmail] Cuenta de alertas no configurada completamente (ALERT_GMAIL_ACCOUNT_EMAIL / ALERT_GMAIL_REFRESH_TOKEN)");
+if (!ALERT_GMAIL_ACCOUNT_EMAIL || !ALERT_GMAIL_REFRESH_TOKEN) {
+  console.warn(
+    "[Gmail] Cuenta de alertas no configurada completamente (ALERT_GMAIL_ACCOUNT_EMAIL / ALERT_GMAIL_REFRESH_TOKEN)"
+  );
 }
 
 /* Crea un cliente OAuth2 con un refresh token dado */
-function createOAuth2Client(refreshToken) {
+function createOAuth2Client(clientId, clientSecret, refreshToken) {
   const oAuth2Client = new google.auth.OAuth2(
-    GMAIL_CLIENT_ID,
-    GMAIL_CLIENT_SECRET,
+    clientId,
+    clientSecret,
     GMAIL_REDIRECT_URI
   );
 
@@ -51,16 +58,38 @@ function getUserEmailForAccount(account) {
 
 /* Crea un cliente de Gmail para la cuenta indicada */
 function getGmailClient(account = "primary") {
-  const isAlerts = account === "alerts";
+  if (account === "alerts") {
+    if (!ALERT_GMAIL_REFRESH_TOKEN) {
+      throw new Error("[Gmail] Falta ALERT_GMAIL_REFRESH_TOKEN para la cuenta alerts");
+    }
+    if (!ALERT_GMAIL_CLIENT_ID || !ALERT_GMAIL_CLIENT_SECRET) {
+      throw new Error(
+        "[Gmail] Faltan ALERT_GMAIL_CLIENT_ID o ALERT_GMAIL_CLIENT_SECRET para la cuenta alerts"
+      );
+    }
 
-  const refreshToken = isAlerts ? ALERT_GMAIL_REFRESH_TOKEN : GMAIL_REFRESH_TOKEN;
-
-  if (!refreshToken) {
-    const key = isAlerts ? "ALERT_GMAIL_REFRESH_TOKEN" : "GMAIL_REFRESH_TOKEN";
-    throw new Error(`[Gmail] Falta ${key} para la cuenta ${account}`);
+    const auth = createOAuth2Client(
+      ALERT_GMAIL_CLIENT_ID,
+      ALERT_GMAIL_CLIENT_SECRET,
+      ALERT_GMAIL_REFRESH_TOKEN
+    );
+    return google.gmail({ version: "v1", auth });
   }
 
-  const auth = createOAuth2Client(refreshToken);
+  if (!GMAIL_REFRESH_TOKEN) {
+    throw new Error("[Gmail] Falta GMAIL_REFRESH_TOKEN para la cuenta primary");
+  }
+  if (!GMAIL_CLIENT_ID || !GMAIL_CLIENT_SECRET) {
+    throw new Error(
+      "[Gmail] Faltan GMAIL_CLIENT_ID o GMAIL_CLIENT_SECRET para la cuenta primary"
+    );
+  }
+
+  const auth = createOAuth2Client(
+    GMAIL_CLIENT_ID,
+    GMAIL_CLIENT_SECRET,
+    GMAIL_REFRESH_TOKEN
+  );
   return google.gmail({ version: "v1", auth });
 }
 
