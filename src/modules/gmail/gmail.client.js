@@ -8,39 +8,68 @@ const GMAIL_QUOTE_QUERY = process.env.GMAIL_QUOTE_QUERY || "in:inbox";
 const GMAIL_REDIRECT_URI =
   process.env.GMAIL_REDIRECT_URI || "https://developers.google.com/oauthplayground";
 
-if (!GMAIL_CLIENT_ID || !GMAIL_CLIENT_SECRET || !GMAIL_REFRESH_TOKEN) {
-  console.warn("[Gmail] Faltan GMAIL_CLIENT_ID, GMAIL_CLIENT_SECRET o GMAIL_REFRESH_TOKEN");
+// Cuenta de alertas (administrativa)
+const ALERT_GMAIL_ACCOUNT_EMAIL = process.env.ALERT_GMAIL_ACCOUNT_EMAIL;
+const ALERT_GMAIL_REFRESH_TOKEN = process.env.ALERT_GMAIL_REFRESH_TOKEN;
+
+if (!GMAIL_CLIENT_ID || !GMAIL_CLIENT_SECRET) {
+  console.warn("[Gmail] Faltan GMAIL_CLIENT_ID o GMAIL_CLIENT_SECRET");
 }
 
-/* Crea un cliente OAuth2 para la API de Gmail */
-function createOAuth2Client() {
+if (!GMAIL_REFRESH_TOKEN) {
+  console.warn("[Gmail] Falta GMAIL_REFRESH_TOKEN para la cuenta principal");
+}
+
+if (!ALERT_GMAIL_REFRESH_TOKEN || !ALERT_GMAIL_ACCOUNT_EMAIL) {
+  console.warn("[Gmail] Cuenta de alertas no configurada completamente (ALERT_GMAIL_ACCOUNT_EMAIL / ALERT_GMAIL_REFRESH_TOKEN)");
+}
+
+/* Crea un cliente OAuth2 con un refresh token dado */
+function createOAuth2Client(refreshToken) {
   const oAuth2Client = new google.auth.OAuth2(
     GMAIL_CLIENT_ID,
     GMAIL_CLIENT_SECRET,
     GMAIL_REDIRECT_URI
   );
 
-  if (GMAIL_REFRESH_TOKEN) {
+  if (refreshToken) {
     oAuth2Client.setCredentials({
-      refresh_token: GMAIL_REFRESH_TOKEN,
+      refresh_token: refreshToken,
     });
   }
 
   return oAuth2Client;
 }
 
-/* Devuelve un cliente de Gmail listo para usar */
-function getGmailClient() {
-  const auth = createOAuth2Client();
+/* Retorna el email de usuario para una cuenta lógica */
+function getUserEmailForAccount(account) {
+  if (account === "alerts") {
+    return ALERT_GMAIL_ACCOUNT_EMAIL || "me";
+  }
+  return GMAIL_ACCOUNT_EMAIL || "me";
+}
+
+/* Crea un cliente de Gmail para la cuenta indicada */
+function getGmailClient(account = "primary") {
+  const isAlerts = account === "alerts";
+
+  const refreshToken = isAlerts ? ALERT_GMAIL_REFRESH_TOKEN : GMAIL_REFRESH_TOKEN;
+
+  if (!refreshToken) {
+    const key = isAlerts ? "ALERT_GMAIL_REFRESH_TOKEN" : "GMAIL_REFRESH_TOKEN";
+    throw new Error(`[Gmail] Falta ${key} para la cuenta ${account}`);
+  }
+
+  const auth = createOAuth2Client(refreshToken);
   return google.gmail({ version: "v1", auth });
 }
 
-/* Lista mensajes de Gmail según un query */
+/* Lista mensajes de Gmail según un query en la cuenta principal (cotizaciones) */
 async function listMessages({ q, maxResults = 50, pageToken } = {}) {
-  const gmail = getGmailClient();
+  const gmail = getGmailClient("primary");
 
   const res = await gmail.users.messages.list({
-    userId: GMAIL_ACCOUNT_EMAIL,
+    userId: getUserEmailForAccount("primary"),
     q: q || GMAIL_QUOTE_QUERY,
     maxResults,
     pageToken,
@@ -53,16 +82,16 @@ async function listMessages({ q, maxResults = 50, pageToken } = {}) {
   };
 }
 
-/* Obtiene un mensaje por id en formato completo */
+/* Obtiene un mensaje por id en formato completo desde la cuenta principal */
 async function getMessageById(messageId) {
   if (!messageId) {
     throw new Error("[Gmail] messageId es requerido");
   }
 
-  const gmail = getGmailClient();
+  const gmail = getGmailClient("primary");
 
   const res = await gmail.users.messages.get({
-    userId: GMAIL_ACCOUNT_EMAIL,
+    userId: getUserEmailForAccount("primary"),
     id: messageId,
     format: "full",
   });
@@ -126,16 +155,16 @@ function buildRawMessage({ from, to, cc, subject, text, html }) {
   return lines.join("\r\n");
 }
 
-/* Envía un correo usando la API de Gmail */
-async function sendGmailMessage({ to, cc, subject, text, html, from }) {
+/* Envía un correo usando la API de Gmail en la cuenta indicada */
+async function sendGmailMessage({ to, cc, subject, text, html, from, account = "primary" }) {
   if (!to || (Array.isArray(to) && to.length === 0)) {
     throw new Error("[Gmail] Campo 'to' es obligatorio para enviar correo");
   }
 
-  const gmail = getGmailClient();
+  const gmail = getGmailClient(account);
+  const userId = getUserEmailForAccount(account);
 
-  const fromAddress = from || GMAIL_ACCOUNT_EMAIL;
-  const fromHeader = fromAddress;
+  const fromHeader = from || userId;
 
   const raw = buildRawMessage({
     from: fromHeader,
@@ -149,7 +178,7 @@ async function sendGmailMessage({ to, cc, subject, text, html, from }) {
   const encodedRaw = encodeBase64Url(raw);
 
   const res = await gmail.users.messages.send({
-    userId: GMAIL_ACCOUNT_EMAIL,
+    userId,
     requestBody: {
       raw: encodedRaw,
     },

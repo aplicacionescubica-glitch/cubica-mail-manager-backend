@@ -10,6 +10,7 @@ const APP_WEB_URL = process.env.APP_WEB_URL || "http://localhost:3000";
 const COMPANY_VERIFICATION_EMAIL = process.env.COMPANY_VERIFICATION_EMAIL;
 const USE_GMAIL_API_FOR_MAIL = process.env.USE_GMAIL_API_FOR_MAIL === "true";
 const GMAIL_ACCOUNT_EMAIL = process.env.GMAIL_ACCOUNT_EMAIL;
+const ALERT_GMAIL_ACCOUNT_EMAIL = process.env.ALERT_GMAIL_ACCOUNT_EMAIL;
 const PENDING_ALERTS_TO_EMAIL =
   process.env.PENDING_ALERTS_TO_EMAIL || GMAIL_ACCOUNT_EMAIL || COMPANY_VERIFICATION_EMAIL;
 
@@ -21,7 +22,7 @@ if (!USE_GMAIL_API_FOR_MAIL && (!SMTP_HOST || !SMTP_USER || !SMTP_PASS)) {
   console.warn("[Mail] Faltan variables SMTP_HOST, SMTP_USER o SMTP_PASS y USE_GMAIL_API_FOR_MAIL es false");
 }
 
-// Crea el transporter SMTP reutilizable solo si no usamos Gmail API
+// Crea el transporter SMTP solo si no usamos Gmail API
 let transporter = null;
 
 if (!USE_GMAIL_API_FOR_MAIL && SMTP_HOST && SMTP_USER && SMTP_PASS) {
@@ -45,12 +46,13 @@ if (!USE_GMAIL_API_FOR_MAIL && SMTP_HOST && SMTP_USER && SMTP_PASS) {
 }
 
 // Envía un correo usando Gmail API o SMTP según configuración
-async function sendMail({ to, cc, subject, text, html, inReplyTo, references, from }) {
+async function sendMail({ to, cc, subject, text, html, inReplyTo, references, from, account }) {
   if (!to || (Array.isArray(to) && to.length === 0)) {
     throw new Error("[Mail] Campo 'to' es obligatorio para enviar correo");
   }
 
   const fromHeader = from || EMAIL_FROM;
+  const accountKey = account === "alerts" ? "alerts" : "primary";
 
   // Rama Gmail API
   if (USE_GMAIL_API_FOR_MAIL) {
@@ -61,6 +63,7 @@ async function sendMail({ to, cc, subject, text, html, inReplyTo, references, fr
       subject,
       text,
       html,
+      account: accountKey,
     });
 
     const id = info && (info.id || info.messageId);
@@ -82,7 +85,6 @@ async function sendMail({ to, cc, subject, text, html, inReplyTo, references, fr
     html,
   };
 
-  // Estos headers solo aplican a SMTP
   if (inReplyTo) {
     mailOptions.inReplyTo = inReplyTo;
   }
@@ -101,7 +103,7 @@ function buildEmailVerificationUrl(token) {
   return `${base}/verify-email?token=${encodeURIComponent(token)}`;
 }
 
-// Envía un correo de verificación al correo de la empresa con datos del usuario creado
+// Envía un correo de verificación al correo de la empresa
 async function sendEmailVerification({ usuarioEmail, nombre, rol, token }) {
   if (!COMPANY_VERIFICATION_EMAIL) {
     throw new Error("[Mail] Falta COMPANY_VERIFICATION_EMAIL en las variables de entorno");
@@ -139,7 +141,7 @@ async function sendEmailVerification({ usuarioEmail, nombre, rol, token }) {
       subject: "Nueva cuenta para verificar - Cubica Mail Manager",
       text: textLines.join("\n"),
       html,
-      // Aquí dejamos que use EMAIL_FROM por defecto
+      account: "primary",
     });
     return info;
   } catch (err) {
@@ -241,20 +243,17 @@ async function sendCotizacionesAtrasadasAlert({ cotizaciones }) {
   const html = buildAtrasadasHtml(cotizaciones);
   const subject = "Alertas de cotizaciones atrasadas - Cubica Mail Manager";
 
-  const cc =
-    COMPANY_VERIFICATION_EMAIL &&
-    COMPANY_VERIFICATION_EMAIL !== PENDING_ALERTS_TO_EMAIL
-      ? COMPANY_VERIFICATION_EMAIL
-      : undefined;
+  const fromAddress =
+    COMPANY_VERIFICATION_EMAIL || ALERT_GMAIL_ACCOUNT_EMAIL || EMAIL_FROM;
 
   try {
     const info = await sendMail({
-      from: COMPANY_VERIFICATION_EMAIL,
+      from: fromAddress,
       to: PENDING_ALERTS_TO_EMAIL,
-      cc,
       subject,
       text: plainText,
       html,
+      account: "alerts",
     });
     return info;
   } catch (err) {
@@ -283,6 +282,7 @@ async function sendCotizacionReply({ to, cc, subject, text, html, inReplyTo }) {
       html,
       inReplyTo,
       references,
+      account: "primary",
     });
     return info;
   } catch (err) {
