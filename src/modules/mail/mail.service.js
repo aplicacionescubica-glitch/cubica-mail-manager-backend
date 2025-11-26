@@ -9,6 +9,9 @@ const EMAIL_FROM = process.env.EMAIL_FROM || "no-reply@example.com";
 const APP_WEB_URL = process.env.APP_WEB_URL || "http://localhost:3000";
 const COMPANY_VERIFICATION_EMAIL = process.env.COMPANY_VERIFICATION_EMAIL;
 const USE_GMAIL_API_FOR_MAIL = process.env.USE_GMAIL_API_FOR_MAIL === "true";
+const GMAIL_ACCOUNT_EMAIL = process.env.GMAIL_ACCOUNT_EMAIL;
+const PENDING_ALERTS_TO_EMAIL =
+  process.env.PENDING_ALERTS_TO_EMAIL || GMAIL_ACCOUNT_EMAIL || COMPANY_VERIFICATION_EMAIL;
 
 if (!COMPANY_VERIFICATION_EMAIL) {
   console.warn("[Mail] Falta la variable COMPANY_VERIFICATION_EMAIL");
@@ -222,21 +225,30 @@ function buildAtrasadasHtml(cotizaciones) {
 
 // Envía un correo de alerta con el resumen de cotizaciones atrasadas
 async function sendCotizacionesAtrasadasAlert({ cotizaciones }) {
-  if (!COMPANY_VERIFICATION_EMAIL) {
-    throw new Error("[Mail] Falta COMPANY_VERIFICATION_EMAIL en las variables de entorno");
+  if (!Array.isArray(cotizaciones) || cotizaciones.length === 0) {
+    return;
   }
 
-  if (!Array.isArray(cotizaciones) || cotizaciones.length === 0) {
+  if (!PENDING_ALERTS_TO_EMAIL) {
+    console.warn("[Mail] No hay correo configurado para alertas de cotizaciones atrasadas");
     return;
   }
 
   const plainText = buildAtrasadasPlainText(cotizaciones);
   const html = buildAtrasadasHtml(cotizaciones);
+  const subject = "Alertas de cotizaciones atrasadas - Cubica Mail Manager";
+
+  const cc =
+    COMPANY_VERIFICATION_EMAIL &&
+    COMPANY_VERIFICATION_EMAIL !== PENDING_ALERTS_TO_EMAIL
+      ? COMPANY_VERIFICATION_EMAIL
+      : undefined;
 
   try {
     const info = await sendMail({
-      to: COMPANY_VERIFICATION_EMAIL,
-      subject: "Alertas de cotizaciones atrasadas - Cubica Mail Manager",
+      to: PENDING_ALERTS_TO_EMAIL,
+      cc,
+      subject,
       text: plainText,
       html,
     });
