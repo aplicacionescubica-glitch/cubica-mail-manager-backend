@@ -2,8 +2,11 @@ name: Cubica Mail Manager Cron
 
 on:
   schedule:
+    # sync-email cada 10 minutos
     - cron: "*/10 * * * *"
-    - cron: "*/30 * * * *"
+    # notificar-pendientes todos los días a las 13:00 UTC (8:00am Colombia)
+    - cron: "0 13 * * *"
+  # Permite ejecutar el workflow manualmente
   workflow_dispatch:
 
 jobs:
@@ -20,8 +23,8 @@ jobs:
             "${{ secrets.RENDER_BASE_URL }}/api/cotizaciones/sync-email/cron" \
             -d '{"maxMessages":50}'
 
-      - name: Llamar notificar-pendientes (cada 30 min)
-        if: github.event_name == 'schedule' && github.event.schedule == '*/30 * * * *'
+      - name: Llamar notificar-pendientes (diario 8am CO)
+        if: github.event_name == 'schedule' && github.event.schedule == '0 13 * * *'
         run: |
           curl -X POST \
             -H "Content-Type: application/json" \
@@ -36,9 +39,9 @@ jobs:
 
           curl -X POST \
             -H "Content-Type: application/json" \
-            -H "x-cron-secret: ${{ secrets.CRON_SECRET }}" \
-            "${{ secrets.RENDER_BASE_URL }}/api/cotizaciones/sync-email/cron" \
-            -d '{"maxMessages":50}'
+              -H "x-cron-secret: ${{ secrets.CRON_SECRET }}" \
+              "${{ secrets.RENDER_BASE_URL }}/api/cotizaciones/sync-email/cron" \
+              -d '{"maxMessages":50}'
 
           curl -X POST \
             -H "Content-Type: application/json" \
