@@ -14,6 +14,9 @@ const userRoutes = require("./modules/users/user.routes");
 // Rutas de cotizaciones
 const cotizacionRoutes = require("./modules/cotizaciones/cotizacion.routes");
 
+// Rutas de historial de correos (EmailLog)
+const emailLogRoutes = require("./modules/gmail/emailLog.routes");
+
 const app = express();
 
 // Configuración de CORS
@@ -46,5 +49,8 @@ app.use("/api/users", userRoutes);
 
 // Rutas de cotizaciones
 app.use("/api/cotizaciones", cotizacionRoutes);
+
+// Rutas de historial de correos
+app.use("/api/emails", emailLogRoutes);
 
 module.exports = app;
