@@ -72,7 +72,10 @@ function isAccountLocked(usuario) {
 
 // Lógica principal de login con email y contraseña
 async function loginWithEmailAndPassword(email, plainPassword) {
-  const usuario = await Usuario.findOne({ email: email.toLowerCase().trim() });
+  // Incluye passwordHash solo para validar credenciales (no se expone al cliente)
+  const usuario = await Usuario.findOne({ email: email.toLowerCase().trim() }).select(
+    "+passwordHash"
+  );
 
   if (!usuario) {
     const error = new Error("Credenciales inválidas");
