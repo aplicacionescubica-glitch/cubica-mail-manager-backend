@@ -33,7 +33,7 @@ async function createUser({ email, nombre, rol, password, createdBy }) {
     throw error;
   }
 
-  if (!["ADMIN", "AGENTE"].includes(rol)) {
+  if (!["ADMIN", "AGENT"].includes(rol)) {
     const error = new Error("Rol inválido");
     error.status = 400;
     error.code = "INVALID_ROLE";
@@ -137,7 +137,7 @@ async function updateUser({ userId, updates, currentAdminId }) {
   }
 
   const allowedEstados = ["activo", "bloqueado", "pendiente_email"];
-  const allowedRoles = ["ADMIN", "AGENTE"];
+  const allowedRoles = ["ADMIN", "AGENT"];
 
   if (typeof updates.estado !== "undefined") {
     if (!allowedEstados.includes(updates.estado)) {
