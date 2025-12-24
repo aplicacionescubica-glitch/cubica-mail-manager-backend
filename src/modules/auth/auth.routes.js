@@ -10,6 +10,9 @@ router.post("/login", login);
 // Ruta para obtener los datos del usuario autenticado
 router.get("/me", requireAuth, me);
 
+// ruyta para verificar el correo desde el front
+router.get("/verify-email", verifyEmail);
+
 // Ruta para verificar el correo a partir de un token
 router.post("/verify-email", verifyEmail);
 
