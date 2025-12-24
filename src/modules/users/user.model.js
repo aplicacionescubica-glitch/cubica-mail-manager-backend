@@ -26,7 +26,7 @@ const userSchema = new mongoose.Schema(
     rol: {
       type: String,
       required: true,
-      enum: ["ADMIN", "AGENTE"],
+      enum: ["ADMIN", "AGENT"],
     },
     estado: {
       type: String,
