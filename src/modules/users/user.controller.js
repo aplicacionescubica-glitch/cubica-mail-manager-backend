@@ -1,4 +1,4 @@
-const { createUser, listUsers, updateUser } = require("./user.service");
+const { createUser, listUsers, updateUser, deleteUser } = require("./user.service");
 
 // Limpia los datos del usuario antes de enviarlos al cliente
 function sanitizeUser(usuario) {
@@ -160,8 +160,50 @@ async function updateUserByAdmin(req, res) {
   }
 }
 
+// Controlador para eliminar un usuario desde un administrador
+async function deleteUserByAdmin(req, res) {
+  try {
+    const { id } = req.params;
+
+    if (!id) {
+      return res.status(400).json({
+        ok: false,
+        error: "MISSING_USER_ID",
+        message: "El id del usuario es obligatorio",
+      });
+    }
+
+    const currentAdminId = req.user ? req.user.id : null;
+
+    const usuarioEliminado = await deleteUser({
+      userId: id,
+      currentAdminId,
+    });
+
+    return res.status(200).json({
+      ok: true,
+      data: {
+        usuario: usuarioEliminado ? sanitizeUser(usuarioEliminado) : null,
+      },
+    });
+  } catch (err) {
+    const status = err.status || 500;
+    const code = err.code || "INTERNAL_ERROR";
+
+    return res.status(status).json({
+      ok: false,
+      error: code,
+      message:
+        status === 500
+          ? "Error interno del servidor"
+          : err.message || "Error al eliminar el usuario",
+    });
+  }
+}
+
 module.exports = {
   createUserByAdmin,
   listUsersByAdmin,
   updateUserByAdmin,
+  deleteUserByAdmin,
 };

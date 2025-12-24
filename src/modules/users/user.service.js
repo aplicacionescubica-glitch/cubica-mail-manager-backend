@@ -15,7 +15,9 @@ async function hashPassword(plainPassword) {
 // Genera un token de verificación de correo y su fecha de expiración
 function generateEmailVerificationToken() {
   const token = crypto.randomBytes(32).toString("hex");
-  const expiresAt = new Date(Date.now() + EMAIL_VERIFICATION_TTL_HOURS * 60 * 60 * 1000);
+  const expiresAt = new Date(
+    Date.now() + EMAIL_VERIFICATION_TTL_HOURS * 60 * 60 * 1000
+  );
   return { token, expiresAt };
 }
 
@@ -92,10 +94,7 @@ async function listUsers({ estado, rol, page = 1, limit = 20 } = {}) {
   const skip = (pageNum - 1) * pageSize;
 
   const [items, total] = await Promise.all([
-    Usuario.find(query)
-      .sort({ createdAt: -1 })
-      .skip(skip)
-      .limit(pageSize),
+    Usuario.find(query).sort({ createdAt: -1 }).skip(skip).limit(pageSize),
     Usuario.countDocuments(query),
   ]);
 
@@ -119,7 +118,10 @@ async function updateUser({ userId, updates, currentAdminId }) {
   }
 
   if (usuario._id.toString() === currentAdminId) {
-    if (typeof updates.rol !== "undefined" || typeof updates.estado !== "undefined") {
+    if (
+      typeof updates.rol !== "undefined" ||
+      typeof updates.estado !== "undefined"
+    ) {
       const error = new Error("No puedes modificar tu propio rol o estado");
       error.status = 400;
       error.code = "CANNOT_UPDATE_SELF_ROLE_OR_STATE";
@@ -166,8 +168,43 @@ async function updateUser({ userId, updates, currentAdminId }) {
   return usuario;
 }
 
+// Elimina un usuario desde un administrador
+async function deleteUser({ userId, currentAdminId }) {
+  const usuario = await Usuario.findById(userId);
+
+  if (!usuario) {
+    const error = new Error("Usuario no encontrado");
+    error.status = 404;
+    error.code = "USER_NOT_FOUND";
+    throw error;
+  }
+
+  if (usuario._id.toString() === String(currentAdminId || "")) {
+    const error = new Error("No puedes eliminar tu propia cuenta");
+    error.status = 400;
+    error.code = "CANNOT_DELETE_SELF";
+    throw error;
+  }
+
+  // Evita eliminar el último ADMIN
+  if (usuario.rol === "ADMIN") {
+    const admins = await Usuario.countDocuments({ rol: "ADMIN" });
+    if (admins <= 1) {
+      const error = new Error("No se puede eliminar el último administrador");
+      error.status = 400;
+      error.code = "CANNOT_DELETE_LAST_ADMIN";
+      throw error;
+    }
+  }
+
+  await Usuario.deleteOne({ _id: usuario._id });
+
+  return usuario;
+}
+
 module.exports = {
   createUser,
   listUsers,
   updateUser,
+  deleteUser,
 };

@@ -21,6 +21,7 @@ const userSchema = new mongoose.Schema(
     passwordHash: {
       type: String,
       required: true,
+      select: false,
     },
     rol: {
       type: String,
@@ -63,10 +64,12 @@ const userSchema = new mongoose.Schema(
     emailVerificationToken: {
       type: String,
       default: null,
+      select: false,
     },
     emailVerificationExpiresAt: {
       type: Date,
       default: null,
+      select: false,
     },
   },
   {
@@ -76,6 +79,9 @@ const userSchema = new mongoose.Schema(
 
 // Índice único para asegurar emails sin duplicados
 userSchema.index({ email: 1 }, { unique: true });
+
+// Índices para filtros frecuentes en el dashboard
+userSchema.index({ rol: 1, estado: 1 });
 
 // Modelo de usuario para usar en el resto de módulos
 const Usuario = mongoose.model("Usuario", userSchema);
