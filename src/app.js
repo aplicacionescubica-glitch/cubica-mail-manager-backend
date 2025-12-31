@@ -26,7 +26,7 @@ const warehouseRoutes = require("./modules/inventory/warehouse.routes");
 const app = express();
 
 // Configuración de CORS
-const CORS_ORIGIN = process.env.CORS_ORIGIN || "http://localhost:3000";
+const CORS_ORIGIN = process.env.CORS_ORIGIN || "https://cubica-mail-manager-frontend.vercel.app";
 
 // Middlewares de seguridad y parseo de JSON
 app.use(helmet());
