@@ -2,225 +2,359 @@ const mongoose = require("mongoose");
 
 const InventoryItem = require("./inventory.model");
 const StockMove = require("./stockMove.model");
+const Warehouse = require("./warehouse.model");
 
-const MOVE_TYPES = new Set(["IN", "OUT", "ADJUST"]);
-const SORT_FIELDS_ITEMS = new Set(["name", "category", "min_stock", "active", "createdAt", "updatedAt"]);
-const SORT_FIELDS_MOVES = new Set(["createdAt", "type", "qty"]);
+/* Convierte string a ObjectId válido */
+function toObjectId(input) {
+  const s = String(input || "").trim();
+  if (!s) return null;
+  if (!mongoose.Types.ObjectId.isValid(s)) return null;
+  return new mongoose.Types.ObjectId(s);
+}
 
 /* Escapa texto para regex seguro */
-function escapeRegex(input) {
-  return String(input || "").replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+function escapeRegex(text) {
+  return String(text || "").replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
 }
 
-/* Convierte a ObjectId si es válido */
-function toObjectId(id) {
-  if (!id) return null;
-  if (!mongoose.Types.ObjectId.isValid(String(id))) return null;
-  return new mongoose.Types.ObjectId(String(id));
+/* Obtiene warehouse principal (fallback) */
+async function getPrimaryWarehouse({ session } = {}) {
+  const q = { active: true, isPrimary: true };
+  const w = await Warehouse.findOne(q).session(session || null);
+  if (w) return w;
+
+  const any = await Warehouse.findOne({ active: true }).session(session || null);
+  return any || null;
 }
 
-/* Parsea sort tipo "name:asc" */
-function parseSort(sortStr, allowedFields, fallback) {
-  const s = String(sortStr || "").trim();
-  if (!s) return fallback;
-
-  const [fieldRaw, dirRaw] = s.split(":").map((p) => String(p || "").trim());
-  const field = fieldRaw || "";
-  const dir = (dirRaw || "asc").toLowerCase();
-
-  if (!allowedFields.has(field)) return fallback;
-  const order = dir === "desc" ? -1 : 1;
-
-  return { [field]: order };
-}
-
-/* Construye filtro de items */
-function buildItemsFilter({ q, category, active }) {
+/* Lista bodegas */
+async function listWarehouses({ q, active, limit = 100, sort = "name:asc" } = {}) {
   const filter = {};
+  const txt = String(q || "").trim();
+  if (txt) {
+    const rx = new RegExp(escapeRegex(txt), "i");
+    filter.$or = [{ name: rx }, { code: rx }];
+  }
+  if (active === true) filter.active = true;
+  if (active === false) filter.active = false;
 
-  if (active === true || active === false) filter.active = active;
-  if (category) filter.category = String(category).trim();
+  const [field, dir] = String(sort || "name:asc").split(":");
+  const sortObj = { [field || "name"]: String(dir || "asc").toLowerCase() === "desc" ? -1 : 1 };
 
-  if (q) {
-    const rx = new RegExp(escapeRegex(String(q).trim()), "i");
-    filter.$or = [{ name: rx }, { category: rx }];
+  const docs = await Warehouse.find(filter).sort(sortObj).limit(Number(limit) || 100);
+  return { items: docs };
+}
+
+/* Crea bodega */
+async function createWarehouse({ name, code, description, active = true, isPrimary = false, createdBy } = {}) {
+  const n = String(name || "").trim();
+  if (!n) throw new Error("NAME_REQUIRED");
+
+  const c = String(code || "").trim().toUpperCase();
+  if (!c) throw new Error("CODE_REQUIRED");
+
+  const by = createdBy ? toObjectId(createdBy) : null;
+
+  const exists = await Warehouse.findOne({ code: c });
+  if (exists) throw new Error("CODE_ALREADY_EXISTS");
+
+  const doc = await Warehouse.create({
+    name: n,
+    code: c,
+    description: description ? String(description).trim() : null,
+    active: Boolean(active),
+    isPrimary: Boolean(isPrimary),
+    createdBy: by,
+  });
+
+  return { warehouse: doc };
+}
+
+/* Actualiza bodega */
+async function updateWarehouse(id, { name, code, description, active, isPrimary, updatedBy } = {}) {
+  const oid = toObjectId(id);
+  if (!oid) throw new Error("INVALID_WAREHOUSE_ID");
+
+  const doc = await Warehouse.findById(oid);
+  if (!doc) throw new Error("WAREHOUSE_NOT_FOUND");
+
+  if (name !== undefined) {
+    const n = String(name || "").trim();
+    if (!n) throw new Error("NAME_REQUIRED");
+    doc.name = n;
   }
 
-  return filter;
+  if (code !== undefined) {
+    const c = String(code || "").trim().toUpperCase();
+    if (!c) throw new Error("CODE_REQUIRED");
+
+    const exists = await Warehouse.findOne({ code: c, _id: { $ne: oid } });
+    if (exists) throw new Error("CODE_ALREADY_EXISTS");
+
+    doc.code = c;
+  }
+
+  if (description !== undefined) {
+    doc.description = description ? String(description).trim() : null;
+  }
+
+  if (active !== undefined) doc.active = Boolean(active);
+  if (isPrimary !== undefined) doc.isPrimary = Boolean(isPrimary);
+
+  const by = updatedBy ? toObjectId(updatedBy) : null;
+  if (by) doc.updatedBy = by;
+
+  await doc.save();
+  return { warehouse: doc };
 }
 
-/* Construye match base para movimientos */
-function buildMovesMatch({ itemId, itemIds, warehouseId }) {
-  const match = {};
-
-  if (itemId) match.itemId = itemId;
-  if (Array.isArray(itemIds) && itemIds.length) match.itemId = { $in: itemIds };
-  if (warehouseId) match.warehouseId = warehouseId;
-
-  return match;
+/* Desactiva bodega */
+async function deactivateWarehouse(id, { updatedBy } = {}) {
+  return updateWarehouse(id, { active: false, updatedBy });
 }
 
-/* Calcula stock de un item por agregación (opcional por bodega) */
-async function calcStockForItem(itemId, { warehouseId, session } = {}) {
+/* Elimina definitivamente una bodega y reasigna movimientos */
+async function purgeWarehouse(id, { reassignToWarehouseId, updatedBy } = {}) {
+  const oid = toObjectId(id);
+  if (!oid) throw new Error("INVALID_WAREHOUSE_ID");
+
+  const dest = toObjectId(reassignToWarehouseId);
+  if (!dest) throw new Error("INVALID_REASSIGN_WAREHOUSE_ID");
+
+  if (String(oid) === String(dest)) throw new Error("SAME_WAREHOUSE_NOT_ALLOWED");
+
+  const session = await mongoose.startSession();
+  try {
+    await session.withTransaction(async () => {
+      const w = await Warehouse.findById(oid).session(session);
+      if (!w) throw new Error("WAREHOUSE_NOT_FOUND");
+
+      const wDest = await Warehouse.findById(dest).session(session);
+      if (!wDest) throw new Error("REASSIGN_WAREHOUSE_NOT_FOUND");
+
+      await StockMove.updateMany({ warehouseId: oid }, { $set: { warehouseId: dest } }).session(session);
+      await Warehouse.deleteOne({ _id: oid }).session(session);
+    });
+
+    return { ok: true };
+  } finally {
+    session.endSession();
+  }
+}
+
+/* Crea item de inventario */
+async function createItem({ name, category, unit, min_stock, active = true, createdBy } = {}) {
+  const n = String(name || "").trim();
+  if (!n) throw new Error("NAME_REQUIRED");
+
+  const cat = category ? String(category).trim() : null;
+  const u = unit ? String(unit).trim() : null;
+
+  const min = Number(min_stock || 0);
+  if (!Number.isFinite(min) || min < 0) throw new Error("INVALID_MIN_STOCK");
+
+  const by = createdBy ? toObjectId(createdBy) : null;
+
+  const doc = await InventoryItem.create({
+    name: n,
+    category: cat,
+    unit: u,
+    min_stock: min,
+    active: Boolean(active),
+    createdBy: by,
+  });
+
+  return { item: doc };
+}
+
+/* Actualiza item */
+async function updateItem(id, { name, category, unit, min_stock, active, updatedBy } = {}) {
+  const oid = toObjectId(id);
+  if (!oid) throw new Error("INVALID_ITEM_ID");
+
+  const doc = await InventoryItem.findById(oid);
+  if (!doc) throw new Error("ITEM_NOT_FOUND");
+
+  if (name !== undefined) {
+    const n = String(name || "").trim();
+    if (!n) throw new Error("NAME_REQUIRED");
+    doc.name = n;
+  }
+
+  if (category !== undefined) doc.category = category ? String(category).trim() : null;
+  if (unit !== undefined) doc.unit = unit ? String(unit).trim() : null;
+
+  if (min_stock !== undefined) {
+    const min = Number(min_stock || 0);
+    if (!Number.isFinite(min) || min < 0) throw new Error("INVALID_MIN_STOCK");
+    doc.min_stock = min;
+  }
+
+  if (active !== undefined) doc.active = Boolean(active);
+
+  const by = updatedBy ? toObjectId(updatedBy) : null;
+  if (by) doc.updatedBy = by;
+
+  await doc.save();
+  return { item: doc };
+}
+
+/* Desactiva item */
+async function deactivateItem(id, { updatedBy } = {}) {
+  return updateItem(id, { active: false, updatedBy });
+}
+
+/* Valida que un item no tenga movimientos */
+async function assertItemHasNoMoves(itemId) {
   const oid = toObjectId(itemId);
-  if (!oid) return null;
+  if (!oid) throw new Error("INVALID_ITEM_ID");
 
-  const wid = warehouseId ? toObjectId(warehouseId) : null;
-  if (warehouseId && !wid) return null;
-
-  const match = buildMovesMatch({ itemId: oid, warehouseId: wid });
-
-  const rows = await StockMove.aggregate(
-    [
-      { $match: match },
-      {
-        $group: {
-          _id: "$itemId",
-          inQty: { $sum: { $cond: [{ $eq: ["$type", "IN"] }, "$qty", 0] } },
-          outQty: { $sum: { $cond: [{ $eq: ["$type", "OUT"] }, "$qty", 0] } },
-          adjDelta: { $sum: { $cond: [{ $eq: ["$type", "ADJUST"] }, "$qty", 0] } },
-        },
-      },
-      {
-        $project: {
-          _id: 0,
-          stock: { $subtract: [{ $add: ["$inQty", "$adjDelta"] }, "$outQty"] },
-        },
-      },
-    ],
-    { session }
-  );
-
-  if (!rows || !rows.length) return 0;
-  const stock = Number(rows[0].stock);
-  return Number.isFinite(stock) ? stock : 0;
+  const has = await StockMove.findOne({ itemId: oid }).select("_id").lean();
+  if (has) {
+    const err = new Error("ITEM_HAS_MOVES");
+    err.code = "ITEM_HAS_MOVES";
+    throw err;
+  }
 }
 
-/* Lista items con filtros y paginación */
-async function listItems({ q, category, active, page, limit, sort }) {
-  const filter = buildItemsFilter({ q, category, active });
-  const sortObj = parseSort(sort, SORT_FIELDS_ITEMS, { name: 1 });
+/* Elimina definitivamente item si no tiene movimientos */
+async function purgeItem(itemId) {
+  const oid = toObjectId(itemId);
+  if (!oid) throw new Error("INVALID_ITEM_ID");
+
+  const doc = await InventoryItem.findById(oid);
+  if (!doc) throw new Error("ITEM_NOT_FOUND");
+
+  await assertItemHasNoMoves(oid);
+  await InventoryItem.deleteOne({ _id: oid });
+
+  return { ok: true };
+}
+
+/* Lista items */
+async function listItems({ q, page = 1, limit = 50, active } = {}) {
+  const filter = {};
+  const txt = String(q || "").trim();
+  if (txt) {
+    const rx = new RegExp(escapeRegex(txt), "i");
+    filter.$or = [{ name: rx }, { category: rx }];
+  }
+  if (active === true) filter.active = true;
+  if (active === false) filter.active = false;
 
   const p = Math.max(1, Number(page) || 1);
-  const l = Math.min(200, Math.max(1, Number(limit) || 50));
-  const skip = (p - 1) * l;
+  const l = Math.max(1, Math.min(200, Number(limit) || 50));
 
   const [items, total] = await Promise.all([
-    InventoryItem.find(filter).sort(sortObj).skip(skip).limit(l).lean(),
+    InventoryItem.find(filter).sort({ createdAt: -1 }).skip((p - 1) * l).limit(l),
     InventoryItem.countDocuments(filter),
   ]);
-
-  const pages = Math.max(1, Math.ceil(total / l));
 
   return {
     items,
     page: p,
     limit: l,
     total,
-    pages,
+    pages: Math.max(1, Math.ceil(total / l)),
   };
 }
 
-/* Obtiene item por id */
-async function getItemById(id) {
-  const oid = toObjectId(id);
-  if (!oid) return null;
-
-  const item = await InventoryItem.findById(oid).lean();
-  return item || null;
-}
-
-/* Crea un item */
-async function createItem({ name, category, unit, min_stock, active, createdBy }) {
-  const doc = await InventoryItem.create({
-    name,
-    category,
-    unit,
-    min_stock,
-    active,
-    createdBy: createdBy ? toObjectId(createdBy) : null,
-  });
-
-  return doc.toObject();
-}
-
-/* Actualiza un item */
-async function updateItem(id, patch, { updatedBy } = {}) {
-  const oid = toObjectId(id);
-  if (!oid) return null;
-
-  const update = { ...patch };
-  if (updatedBy) update.updatedBy = toObjectId(updatedBy);
-
-  const doc = await InventoryItem.findOneAndUpdate({ _id: oid }, update, {
-    new: true,
-    runValidators: true,
-  }).lean();
-
-  return doc || null;
-}
-
-/* Desactiva un item (soft delete) */
-async function deactivateItem(id, { updatedBy } = {}) {
-  const oid = toObjectId(id);
-  if (!oid) return false;
-
-  const update = { active: false };
-  if (updatedBy) update.updatedBy = toObjectId(updatedBy);
-
-  const r = await InventoryItem.updateOne({ _id: oid }, update);
-  return (r && r.matchedCount > 0) || false;
-}
-
-/* Verifica si un item tiene movimientos (en cualquier bodega) */
-async function itemHasMoves(itemId) {
+/* Calcula stock por item y bodega */
+async function calcStockForItem(itemId, { warehouseId, session } = {}) {
   const oid = toObjectId(itemId);
-  if (!oid) throw new Error("INVALID_ITEM_ID");
+  if (!oid) return 0;
 
-  const n = await StockMove.countDocuments({ itemId: oid });
-  return Number(n) > 0;
+  const wid = toObjectId(warehouseId);
+  if (!wid) return 0;
+
+  const moves = await StockMove.find({ itemId: oid, warehouseId: wid })
+    .session(session || null)
+    .select("type qty to")
+    .lean();
+
+  let stock = 0;
+  for (const m of moves) {
+    const t = String(m.type || "").toUpperCase();
+    if (t === "IN") stock += Number(m.qty || 0);
+    if (t === "OUT") stock -= Number(m.qty || 0);
+    if (t === "ADJUST") stock = Number(m.to || 0);
+  }
+
+  return stock;
 }
 
-/* Hard delete condicionado: solo elimina si no tiene movimientos */
-async function hardDeleteItemIfNoMoves(itemId) {
-  const oid = toObjectId(itemId);
-  if (!oid) throw new Error("INVALID_ITEM_ID");
+/* Resumen de stock por bodega */
+async function getStockSummary({ q, category, warehouseId } = {}) {
+  const wid = toObjectId(warehouseId);
+  if (!wid) throw new Error("WAREHOUSE_ID_REQUIRED");
 
-  const exists = await InventoryItem.exists({ _id: oid });
-  if (!exists) return false;
+  const filter = { active: true };
+  const txt = String(q || "").trim();
+  if (txt) {
+    const rx = new RegExp(escapeRegex(txt), "i");
+    filter.$or = [{ name: rx }, { category: rx }];
+  }
+  const cat = String(category || "").trim();
+  if (cat) filter.category = cat;
 
-  const hasMoves = await itemHasMoves(oid);
-  if (hasMoves) throw new Error("ITEM_HAS_MOVES");
+  const items = await InventoryItem.find(filter).lean();
 
-  const r = await InventoryItem.deleteOne({ _id: oid });
-  return (r && r.deletedCount > 0) || false;
+  const out = [];
+  for (const it of items) {
+    const stock = await calcStockForItem(it._id, { warehouseId: wid });
+    out.push({ ...it, stock });
+  }
+
+  return { items: out };
 }
 
-/* Retorna stock de un item (opcional por bodega) */
-async function getStockForItem(itemId, { warehouseId } = {}) {
-  return calcStockForItem(itemId, { warehouseId });
+/* Alertas de bajo stock por bodega */
+async function getLowStockAlerts({ q, category, warehouseId } = {}) {
+  const wid = toObjectId(warehouseId);
+  if (!wid) throw new Error("WAREHOUSE_ID_REQUIRED");
+
+  const filter = { active: true };
+  const txt = String(q || "").trim();
+  if (txt) {
+    const rx = new RegExp(escapeRegex(txt), "i");
+    filter.$or = [{ name: rx }, { category: rx }];
+  }
+  const cat = String(category || "").trim();
+  if (cat) filter.category = cat;
+
+  const items = await InventoryItem.find(filter).lean();
+
+  const out = [];
+  for (const it of items) {
+    const stock = await calcStockForItem(it._id, { warehouseId: wid });
+    if (Number(stock) <= Number(it.min_stock || 0)) {
+      out.push({ ...it, stock });
+    }
+  }
+
+  return { items: out };
 }
 
-/* Crea movimiento IN/OUT con validación de stock negativo (por bodega) */
-async function createMove({ itemId, warehouseId, type, qty, note, transferId, createdBy }) {
+/* Registra movimiento IN/OUT */
+async function createMove({ itemId, warehouseId, type, qty, note, createdBy, transferId } = {}) {
   const oid = toObjectId(itemId);
   if (!oid) throw new Error("INVALID_ITEM_ID");
 
   const wid = toObjectId(warehouseId);
   if (!wid) throw new Error("INVALID_WAREHOUSE_ID");
 
-  const t = String(type || "").toUpperCase();
-  if (!MOVE_TYPES.has(t)) throw new Error("INVALID_MOVE_TYPE");
+  const t = String(type || "").toUpperCase().trim();
+  if (!["IN", "OUT"].includes(t)) throw new Error("INVALID_TYPE");
 
   const q = Number(qty);
   if (!Number.isFinite(q) || q <= 0) throw new Error("INVALID_QTY");
 
   const by = createdBy ? toObjectId(createdBy) : null;
-  const xfer = transferId ? String(transferId).trim() : null;
+  const xfer = transferId ? String(transferId) : null;
 
   const session = await mongoose.startSession();
   try {
-    let created = null;
+    let move = null;
 
     await session.withTransaction(async () => {
       if (t === "OUT") {
@@ -247,17 +381,17 @@ async function createMove({ itemId, warehouseId, type, qty, note, transferId, cr
         { session }
       );
 
-      created = moveDoc[0].toObject();
+      move = moveDoc[0].toObject();
     });
 
-    return created;
+    return { move };
   } finally {
     session.endSession();
   }
 }
 
-/* Crea movimiento ADJUST tipo set (to) por bodega */
-async function createAdjustMoveSet({ itemId, warehouseId, to, note, createdBy }) {
+/* Registra movimiento ADJUST a stock final */
+async function createAdjustMoveSet({ itemId, warehouseId, to, note, createdBy } = {}) {
   const oid = toObjectId(itemId);
   if (!oid) throw new Error("INVALID_ITEM_ID");
 
@@ -265,21 +399,19 @@ async function createAdjustMoveSet({ itemId, warehouseId, to, note, createdBy })
   if (!wid) throw new Error("INVALID_WAREHOUSE_ID");
 
   const target = Number(to);
-  if (!Number.isFinite(target) || target < 0) throw new Error("INVALID_TO_STOCK");
+  if (!Number.isFinite(target) || target < 0) throw new Error("INVALID_TO");
 
   const by = createdBy ? toObjectId(createdBy) : null;
 
   const session = await mongoose.startSession();
   try {
-    let created = null;
+    let move = null;
 
     await session.withTransaction(async () => {
       const current = await calcStockForItem(oid, { warehouseId: wid, session });
-      if (!Number.isFinite(current)) throw new Error("STOCK_UNAVAILABLE");
-
       const delta = target - current;
 
-      const moveDoc = await StockMove.create(
+      const created = await StockMove.create(
         [
           {
             itemId: oid,
@@ -294,16 +426,16 @@ async function createAdjustMoveSet({ itemId, warehouseId, to, note, createdBy })
         { session }
       );
 
-      created = moveDoc[0].toObject();
+      move = created[0].toObject();
     });
 
-    return created;
+    return { move };
   } finally {
     session.endSession();
   }
 }
 
-/* Transfiere stock entre bodegas (OUT origen + IN destino en transacción) */
+/* Transferencia entre bodegas */
 async function transferStock({ itemId, fromWarehouseId, toWarehouseId, qty, note, createdBy }) {
   const oid = toObjectId(itemId);
   if (!oid) throw new Error("INVALID_ITEM_ID");
@@ -356,7 +488,7 @@ async function transferStock({ itemId, fromWarehouseId, toWarehouseId, qty, note
             createdBy: by,
           },
         ],
-        { session }
+        { session, ordered: true }
       );
 
       outMove = created[0].toObject();
@@ -369,182 +501,49 @@ async function transferStock({ itemId, fromWarehouseId, toWarehouseId, qty, note
   }
 }
 
-/* Lista movimientos con filtros y paginación (opcional por bodega) */
-async function listMoves({ itemId, warehouseId, transferId, type, from, to, page, limit, sort }) {
+/* Lista movimientos (opcional por bodega) */
+async function listMoves({ warehouseId, page = 1, limit = 50 } = {}) {
   const filter = {};
-
-  if (itemId) {
-    const oid = toObjectId(itemId);
-    if (!oid) return { items: [], page: 1, limit: Number(limit) || 50, total: 0, pages: 1 };
-    filter.itemId = oid;
-  }
-
-  if (warehouseId) {
-    const wid = toObjectId(warehouseId);
-    if (!wid) return { items: [], page: 1, limit: Number(limit) || 50, total: 0, pages: 1 };
-    filter.warehouseId = wid;
-  }
-
-  if (transferId) {
-    filter.transferId = String(transferId).trim();
-  }
-
-  if (type) {
-    const t = String(type).toUpperCase();
-    if (MOVE_TYPES.has(t)) filter.type = t;
-  }
-
-  if (from || to) {
-    filter.createdAt = {};
-    if (from instanceof Date && !Number.isNaN(from.getTime())) filter.createdAt.$gte = from;
-    if (to instanceof Date && !Number.isNaN(to.getTime())) filter.createdAt.$lte = to;
-  }
-
-  const sortObj = parseSort(sort, SORT_FIELDS_MOVES, { createdAt: -1 });
+  const wid = toObjectId(warehouseId);
+  if (wid) filter.warehouseId = wid;
 
   const p = Math.max(1, Number(page) || 1);
-  const l = Math.min(200, Math.max(1, Number(limit) || 50));
-  const skip = (p - 1) * l;
+  const l = Math.max(1, Math.min(200, Number(limit) || 50));
 
   const [items, total] = await Promise.all([
-    StockMove.find(filter).sort(sortObj).skip(skip).limit(l).lean(),
+    StockMove.find(filter).sort({ createdAt: -1 }).skip((p - 1) * l).limit(l),
     StockMove.countDocuments(filter),
   ]);
-
-  const pages = Math.max(1, Math.ceil(total / l));
 
   return {
     items,
     page: p,
     limit: l,
     total,
-    pages,
+    pages: Math.max(1, Math.ceil(total / l)),
   };
 }
 
-/* Retorna resumen de stock por item (opcional por bodega) */
-async function getStockSummary({ q, category, active, warehouseId }) {
-  const filter = buildItemsFilter({ q, category, active });
-
-  const wid = warehouseId ? toObjectId(warehouseId) : null;
-  if (warehouseId && !wid) return { items: [] };
-
-  const items = await InventoryItem.find(filter).sort({ name: 1 }).lean();
-  const ids = items.map((it) => it._id);
-
-  if (!ids.length) {
-    return { items: [] };
-  }
-
-  const match = buildMovesMatch({ itemIds: ids, warehouseId: wid });
-
-  const rows = await StockMove.aggregate([
-    { $match: match },
-    {
-      $group: {
-        _id: "$itemId",
-        inQty: { $sum: { $cond: [{ $eq: ["$type", "IN"] }, "$qty", 0] } },
-        outQty: { $sum: { $cond: [{ $eq: ["$type", "OUT"] }, "$qty", 0] } },
-        adjDelta: { $sum: { $cond: [{ $eq: ["$type", "ADJUST"] }, "$qty", 0] } },
-      },
-    },
-    {
-      $project: {
-        _id: 1,
-        stock: { $subtract: [{ $add: ["$inQty", "$adjDelta"] }, "$outQty"] },
-      },
-    },
-  ]);
-
-  const stockMap = new Map(rows.map((r) => [String(r._id), Number(r.stock) || 0]));
-
-  const merged = items.map((it) => {
-    const stock = stockMap.get(String(it._id)) ?? 0;
-    return { ...it, stock };
-  });
-
-  return { items: merged };
-}
-
-/* Retorna items con stock <= min_stock (opcional por bodega) */
-async function getLowStockAlerts({ q, category, warehouseId }) {
-  const filter = buildItemsFilter({ q, category, active: true });
-
-  const wid = warehouseId ? toObjectId(warehouseId) : null;
-  if (warehouseId && !wid) return { items: [] };
-
-  const movesCollection = StockMove.collection.name;
-
-  const rows = await InventoryItem.aggregate([
-    { $match: filter },
-    {
-      $lookup: {
-        from: movesCollection,
-        let: { itemId: "$_id", wid },
-        pipeline: [
-          {
-            $match: {
-              $expr: {
-                $and: [
-                  { $eq: ["$itemId", "$$itemId"] },
-                  ...(wid ? [{ $eq: ["$warehouseId", "$$wid"] }] : []),
-                ],
-              },
-            },
-          },
-          {
-            $group: {
-              _id: null,
-              inQty: { $sum: { $cond: [{ $eq: ["$type", "IN"] }, "$qty", 0] } },
-              outQty: { $sum: { $cond: [{ $eq: ["$type", "OUT"] }, "$qty", 0] } },
-              adjDelta: { $sum: { $cond: [{ $eq: ["$type", "ADJUST"] }, "$qty", 0] } },
-            },
-          },
-        ],
-        as: "m",
-      },
-    },
-    {
-      $addFields: {
-        _m0: { $ifNull: [{ $arrayElemAt: ["$m", 0] }, null] },
-      },
-    },
-    {
-      $addFields: {
-        stock: {
-          $cond: [
-            { $eq: ["$_m0", null] },
-            0,
-            { $subtract: [{ $add: ["$_m0.inQty", "$_m0.adjDelta"] }, "$_m0.outQty"] },
-          ],
-        },
-      },
-    },
-    {
-      $match: {
-        $expr: { $lte: ["$stock", "$min_stock"] },
-      },
-    },
-    { $project: { m: 0, _m0: 0 } },
-    { $sort: { stock: 1, name: 1 } },
-  ]);
-
-  return { items: rows };
-}
-
 module.exports = {
-  listItems,
-  getItemById,
+  listWarehouses,
+  createWarehouse,
+  updateWarehouse,
+  deactivateWarehouse,
+  purgeWarehouse,
+
   createItem,
   updateItem,
   deactivateItem,
-  itemHasMoves,
-  hardDeleteItemIfNoMoves,
-  getStockForItem,
+  purgeItem,
+  listItems,
+
+  getPrimaryWarehouse,
+  calcStockForItem,
+  getStockSummary,
+  getLowStockAlerts,
+
   createMove,
   createAdjustMoveSet,
   transferStock,
   listMoves,
-  getStockSummary,
-  getLowStockAlerts,
 };

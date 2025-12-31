@@ -1,4 +1,5 @@
 const inventoryService = require("./inventory.service");
+const InventoryItem = require("./inventory.model");
 
 const MOVE_TYPES = new Set(["IN", "OUT", "ADJUST"]);
 
@@ -30,6 +31,14 @@ function toDateOrNull(value) {
 
 function badRequest(res, error, message) {
   return res.status(400).json({ ok: false, error, message });
+}
+
+function conflict(res, error, message) {
+  return res.status(409).json({ ok: false, error, message });
+}
+
+function notFound(res, error, message) {
+  return res.status(404).json({ ok: false, error, message });
 }
 
 function serverError(res, err) {
@@ -74,13 +83,9 @@ async function getItem(req, res) {
       return badRequest(res, "VALIDATION_ERROR", "El id del item es requerido");
     }
 
-    const item = await inventoryService.getItemById(id);
+    const item = await InventoryItem.findById(id).lean();
     if (!item) {
-      return res.status(404).json({
-        ok: false,
-        error: "NOT_FOUND",
-        message: "Item no existe",
-      });
+      return notFound(res, "NOT_FOUND", "Item no existe");
     }
 
     return res.json({ ok: true, data: item });
@@ -149,13 +154,9 @@ async function updateItem(req, res) {
 
     const updatedBy = req.user?.id || null;
 
-    const updated = await inventoryService.updateItem(id, patch, { updatedBy });
+    const updated = await inventoryService.updateItem(id, { ...patch, updatedBy });
     if (!updated) {
-      return res.status(404).json({
-        ok: false,
-        error: "NOT_FOUND",
-        message: "Item no existe",
-      });
+      return notFound(res, "NOT_FOUND", "Item no existe");
     }
 
     return res.json({ ok: true, data: updated });
@@ -176,11 +177,7 @@ async function deactivateItem(req, res) {
 
     const ok = await inventoryService.deactivateItem(id, { updatedBy });
     if (!ok) {
-      return res.status(404).json({
-        ok: false,
-        error: "NOT_FOUND",
-        message: "Item no existe",
-      });
+      return notFound(res, "NOT_FOUND", "Item no existe");
     }
 
     return res.json({ ok: true, message: "Item desactivado" });
@@ -197,26 +194,22 @@ async function purgeItem(req, res) {
       return badRequest(res, "VALIDATION_ERROR", "El id del item es requerido");
     }
 
-    const deleted = await inventoryService.hardDeleteItemIfNoMoves(id);
-    if (!deleted) {
-      return res.status(404).json({
-        ok: false,
-        error: "NOT_FOUND",
-        message: "Item no existe",
-      });
-    }
+    await inventoryService.purgeItem(id);
 
     return res.json({ ok: true, message: "Item eliminado definitivamente" });
   } catch (err) {
     if (err?.message === "INVALID_ITEM_ID") {
       return badRequest(res, "VALIDATION_ERROR", "itemId inválido");
     }
+    if (err?.message === "ITEM_NOT_FOUND") {
+      return notFound(res, "NOT_FOUND", "Item no existe");
+    }
     if (err?.message === "ITEM_HAS_MOVES") {
-      return res.status(409).json({
-        ok: false,
-        error: "ITEM_HAS_MOVES",
-        message: "No se puede eliminar: el item tiene movimientos. Desactívalo en su lugar.",
-      });
+      return conflict(
+        res,
+        "ITEM_HAS_MOVES",
+        "No se puede eliminar: el item tiene movimientos. Desactívalo en su lugar."
+      );
     }
     return serverError(res, err);
   }
@@ -239,6 +232,9 @@ async function getStockSummary(req, res) {
 
     return res.json({ ok: true, data: result });
   } catch (err) {
+    if (err?.message === "WAREHOUSE_ID_REQUIRED") {
+      return badRequest(res, "VALIDATION_ERROR", "warehouseId es requerido");
+    }
     return serverError(res, err);
   }
 }
@@ -323,16 +319,6 @@ async function createMove(req, res) {
       return badRequest(res, "VALIDATION_ERROR", "qty debe ser un número > 0");
     }
 
-    if (type === "OUT") {
-      const current = await inventoryService.getStockForItem(itemId, { warehouseId });
-      if (!Number.isFinite(current)) {
-        return badRequest(res, "STOCK_UNAVAILABLE", "No fue posible calcular el stock actual del item");
-      }
-      if (current - qty < 0) {
-        return badRequest(res, "STOCK_NEGATIVE_NOT_ALLOWED", "La salida dejaría el stock en negativo");
-      }
-    }
-
     const created = await inventoryService.createMove({
       itemId,
       warehouseId,
@@ -345,7 +331,7 @@ async function createMove(req, res) {
     return res.status(201).json({ ok: true, data: created });
   } catch (err) {
     if (err?.message === "STOCK_NEGATIVE_NOT_ALLOWED") {
-      return badRequest(res, "STOCK_NEGATIVE_NOT_ALLOWED", "La salida dejaría el stock en negativo");
+      return conflict(res, "STOCK_NEGATIVE_NOT_ALLOWED", "La salida dejaría el stock en negativo");
     }
     if (err?.message === "INVALID_WAREHOUSE_ID") {
       return badRequest(res, "VALIDATION_ERROR", "warehouseId inválido");
@@ -394,7 +380,7 @@ async function createTransfer(req, res) {
     return res.status(201).json({ ok: true, data: result });
   } catch (err) {
     if (err?.message === "STOCK_NEGATIVE_NOT_ALLOWED") {
-      return badRequest(res, "STOCK_NEGATIVE_NOT_ALLOWED", "La transferencia dejaría el stock en negativo");
+      return conflict(res, "STOCK_NEGATIVE_NOT_ALLOWED", "La transferencia dejaría el stock en negativo");
     }
     if (err?.message === "SAME_WAREHOUSE_NOT_ALLOWED") {
       return badRequest(res, "VALIDATION_ERROR", "La bodega origen y destino no pueden ser iguales");
@@ -427,6 +413,9 @@ async function getLowStockAlerts(req, res) {
 
     return res.json({ ok: true, data: result });
   } catch (err) {
+    if (err?.message === "WAREHOUSE_ID_REQUIRED") {
+      return badRequest(res, "VALIDATION_ERROR", "warehouseId es requerido");
+    }
     return serverError(res, err);
   }
 }
