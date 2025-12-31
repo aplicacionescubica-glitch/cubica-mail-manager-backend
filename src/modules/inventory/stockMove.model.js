@@ -1,11 +1,17 @@
 const mongoose = require("mongoose");
 
-/* Esquema de movimientos de inventario */
+/* Esquema de movimientos de inventario con soporte por bodega */
 const stockMoveSchema = new mongoose.Schema(
   {
     itemId: {
       type: mongoose.Schema.Types.ObjectId,
       ref: "InventoryItem",
+      required: true,
+      index: true,
+    },
+    warehouseId: {
+      type: mongoose.Schema.Types.ObjectId,
+      ref: "Warehouse",
       required: true,
       index: true,
     },
@@ -27,7 +33,13 @@ const stockMoveSchema = new mongoose.Schema(
       type: String,
       default: null,
       trim: true,
-      maxlength: 500,
+      maxlength: 240,
+    },
+    transferId: {
+      type: String,
+      default: null,
+      trim: true,
+      index: true,
     },
     createdBy: {
       type: mongoose.Schema.Types.ObjectId,
@@ -41,8 +53,10 @@ const stockMoveSchema = new mongoose.Schema(
   }
 );
 
-/* Índices para consultas por item y fecha */
-stockMoveSchema.index({ itemId: 1, createdAt: -1 });
-stockMoveSchema.index({ type: 1, createdAt: -1 });
+/* Índices para consultas por item, bodega y fecha */
+stockMoveSchema.index({ itemId: 1, warehouseId: 1, createdAt: -1 });
+stockMoveSchema.index({ warehouseId: 1, createdAt: -1 });
+stockMoveSchema.index({ type: 1, warehouseId: 1, createdAt: -1 });
+stockMoveSchema.index({ transferId: 1, createdAt: -1 });
 
 module.exports = mongoose.model("StockMove", stockMoveSchema);

@@ -20,6 +20,9 @@ const emailLogRoutes = require("./modules/gmail/emailLog.routes");
 // Rutas de inventario
 const inventoryRoutes = require("./modules/inventory/inventory.routes");
 
+// Rutas de bodegas
+const warehouseRoutes = require("./modules/inventory/warehouse.routes");
+
 const app = express();
 
 // Configuración de CORS
@@ -58,5 +61,8 @@ app.use("/api/emails", emailLogRoutes);
 
 // Rutas de inventario
 app.use("/api/inventory", inventoryRoutes);
+
+// Rutas de bodegas
+app.use("/api/warehouses", warehouseRoutes);
 
 module.exports = app;

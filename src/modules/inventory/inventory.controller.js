@@ -189,17 +189,19 @@ async function deactivateItem(req, res) {
   }
 }
 
-/* Stock: resumen del stock actual por item */
+/* Stock: resumen del stock actual por item (opcional por bodega) */
 async function getStockSummary(req, res) {
   try {
     const q = String(req.query.q || "").trim() || null;
     const category = String(req.query.category || "").trim() || null;
     const active = toBool(req.query.active, null);
+    const warehouseId = String(req.query.warehouseId || "").trim() || null;
 
     const result = await inventoryService.getStockSummary({
       q,
       category,
       active,
+      warehouseId,
     });
 
     return res.json({ ok: true, data: result });
@@ -208,10 +210,13 @@ async function getStockSummary(req, res) {
   }
 }
 
-/* Movimientos: lista con filtros y paginación */
+/* Movimientos: lista con filtros y paginación (opcional por bodega) */
 async function listMoves(req, res) {
   try {
     const itemId = String(req.query.itemId || "").trim() || null;
+    const warehouseId = String(req.query.warehouseId || "").trim() || null;
+    const transferId = String(req.query.transferId || "").trim() || null;
+
     const type = String(req.query.type || "").trim().toUpperCase() || null;
     const from = toDateOrNull(req.query.from);
     const to = toDateOrNull(req.query.to);
@@ -226,6 +231,8 @@ async function listMoves(req, res) {
 
     const result = await inventoryService.listMoves({
       itemId,
+      warehouseId,
+      transferId,
       type,
       from,
       to,
@@ -240,15 +247,19 @@ async function listMoves(req, res) {
   }
 }
 
-/* Movimientos: crea IN/OUT o ADJUST (set) con bloqueo de stock negativo */
+/* Movimientos: crea IN/OUT o ADJUST (set) por bodega con bloqueo de stock negativo */
 async function createMove(req, res) {
   try {
     const itemId = String(req.body?.itemId || "").trim();
+    const warehouseId = String(req.body?.warehouseId || "").trim();
     const type = String(req.body?.type || "").trim().toUpperCase();
     const note = req.body?.note === undefined ? null : String(req.body.note || "").trim() || null;
 
     if (!itemId) {
       return badRequest(res, "VALIDATION_ERROR", "itemId es requerido");
+    }
+    if (!warehouseId) {
+      return badRequest(res, "VALIDATION_ERROR", "warehouseId es requerido");
     }
     if (!MOVE_TYPES.has(type)) {
       return badRequest(res, "VALIDATION_ERROR", "type debe ser IN, OUT o ADJUST");
@@ -265,6 +276,7 @@ async function createMove(req, res) {
 
       const created = await inventoryService.createAdjustMoveSet({
         itemId,
+        warehouseId,
         to: toStock,
         note,
         createdBy,
@@ -279,7 +291,7 @@ async function createMove(req, res) {
     }
 
     if (type === "OUT") {
-      const current = await inventoryService.getStockForItem(itemId);
+      const current = await inventoryService.getStockForItem(itemId, { warehouseId });
       if (!Number.isFinite(current)) {
         return badRequest(res, "STOCK_UNAVAILABLE", "No fue posible calcular el stock actual del item");
       }
@@ -290,6 +302,7 @@ async function createMove(req, res) {
 
     const created = await inventoryService.createMove({
       itemId,
+      warehouseId,
       type,
       qty,
       note,
@@ -298,19 +311,85 @@ async function createMove(req, res) {
 
     return res.status(201).json({ ok: true, data: created });
   } catch (err) {
+    if (err?.message === "STOCK_NEGATIVE_NOT_ALLOWED") {
+      return badRequest(res, "STOCK_NEGATIVE_NOT_ALLOWED", "La salida dejaría el stock en negativo");
+    }
+    if (err?.message === "INVALID_WAREHOUSE_ID") {
+      return badRequest(res, "VALIDATION_ERROR", "warehouseId inválido");
+    }
+    if (err?.message === "INVALID_ITEM_ID") {
+      return badRequest(res, "VALIDATION_ERROR", "itemId inválido");
+    }
     return serverError(res, err);
   }
 }
 
-/* Alertas: items con stock <= min_stock */
+/* Transferencias: mueve stock entre bodegas (OUT origen + IN destino) */
+async function createTransfer(req, res) {
+  try {
+    const itemId = String(req.body?.itemId || "").trim();
+    const fromWarehouseId = String(req.body?.fromWarehouseId || "").trim();
+    const toWarehouseId = String(req.body?.toWarehouseId || "").trim();
+    const note = req.body?.note === undefined ? null : String(req.body.note || "").trim() || null;
+
+    if (!itemId) {
+      return badRequest(res, "VALIDATION_ERROR", "itemId es requerido");
+    }
+    if (!fromWarehouseId) {
+      return badRequest(res, "VALIDATION_ERROR", "fromWarehouseId es requerido");
+    }
+    if (!toWarehouseId) {
+      return badRequest(res, "VALIDATION_ERROR", "toWarehouseId es requerido");
+    }
+
+    const qty = toNumber(req.body?.qty, NaN);
+    if (!Number.isFinite(qty) || qty <= 0) {
+      return badRequest(res, "VALIDATION_ERROR", "qty debe ser un número > 0");
+    }
+
+    const createdBy = req.user?.id || null;
+
+    const result = await inventoryService.transferStock({
+      itemId,
+      fromWarehouseId,
+      toWarehouseId,
+      qty,
+      note,
+      createdBy,
+    });
+
+    return res.status(201).json({ ok: true, data: result });
+  } catch (err) {
+    if (err?.message === "STOCK_NEGATIVE_NOT_ALLOWED") {
+      return badRequest(res, "STOCK_NEGATIVE_NOT_ALLOWED", "La transferencia dejaría el stock en negativo");
+    }
+    if (err?.message === "SAME_WAREHOUSE_NOT_ALLOWED") {
+      return badRequest(res, "VALIDATION_ERROR", "La bodega origen y destino no pueden ser iguales");
+    }
+    if (err?.message === "INVALID_FROM_WAREHOUSE_ID") {
+      return badRequest(res, "VALIDATION_ERROR", "fromWarehouseId inválido");
+    }
+    if (err?.message === "INVALID_TO_WAREHOUSE_ID") {
+      return badRequest(res, "VALIDATION_ERROR", "toWarehouseId inválido");
+    }
+    if (err?.message === "INVALID_ITEM_ID") {
+      return badRequest(res, "VALIDATION_ERROR", "itemId inválido");
+    }
+    return serverError(res, err);
+  }
+}
+
+/* Alertas: items con stock <= min_stock (opcional por bodega) */
 async function getLowStockAlerts(req, res) {
   try {
     const q = String(req.query.q || "").trim() || null;
     const category = String(req.query.category || "").trim() || null;
+    const warehouseId = String(req.query.warehouseId || "").trim() || null;
 
     const result = await inventoryService.getLowStockAlerts({
       q,
       category,
+      warehouseId,
     });
 
     return res.json({ ok: true, data: result });
@@ -328,5 +407,6 @@ module.exports = {
   getStockSummary,
   listMoves,
   createMove,
+  createTransfer,
   getLowStockAlerts,
 };
