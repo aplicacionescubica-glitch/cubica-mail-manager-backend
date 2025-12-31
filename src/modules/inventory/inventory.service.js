@@ -172,6 +172,30 @@ async function deactivateItem(id, { updatedBy } = {}) {
   return (r && r.matchedCount > 0) || false;
 }
 
+/* Verifica si un item tiene movimientos (en cualquier bodega) */
+async function itemHasMoves(itemId) {
+  const oid = toObjectId(itemId);
+  if (!oid) throw new Error("INVALID_ITEM_ID");
+
+  const n = await StockMove.countDocuments({ itemId: oid });
+  return Number(n) > 0;
+}
+
+/* Hard delete condicionado: solo elimina si no tiene movimientos */
+async function hardDeleteItemIfNoMoves(itemId) {
+  const oid = toObjectId(itemId);
+  if (!oid) throw new Error("INVALID_ITEM_ID");
+
+  const exists = await InventoryItem.exists({ _id: oid });
+  if (!exists) return false;
+
+  const hasMoves = await itemHasMoves(oid);
+  if (hasMoves) throw new Error("ITEM_HAS_MOVES");
+
+  const r = await InventoryItem.deleteOne({ _id: oid });
+  return (r && r.deletedCount > 0) || false;
+}
+
 /* Retorna stock de un item (opcional por bodega) */
 async function getStockForItem(itemId, { warehouseId } = {}) {
   return calcStockForItem(itemId, { warehouseId });
@@ -514,6 +538,8 @@ module.exports = {
   createItem,
   updateItem,
   deactivateItem,
+  itemHasMoves,
+  hardDeleteItemIfNoMoves,
   getStockForItem,
   createMove,
   createAdjustMoveSet,

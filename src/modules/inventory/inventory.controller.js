@@ -189,6 +189,39 @@ async function deactivateItem(req, res) {
   }
 }
 
+/* Items: elimina definitivamente solo si no tiene movimientos */
+async function purgeItem(req, res) {
+  try {
+    const id = String(req.params.id || "").trim();
+    if (!id) {
+      return badRequest(res, "VALIDATION_ERROR", "El id del item es requerido");
+    }
+
+    const deleted = await inventoryService.hardDeleteItemIfNoMoves(id);
+    if (!deleted) {
+      return res.status(404).json({
+        ok: false,
+        error: "NOT_FOUND",
+        message: "Item no existe",
+      });
+    }
+
+    return res.json({ ok: true, message: "Item eliminado definitivamente" });
+  } catch (err) {
+    if (err?.message === "INVALID_ITEM_ID") {
+      return badRequest(res, "VALIDATION_ERROR", "itemId inválido");
+    }
+    if (err?.message === "ITEM_HAS_MOVES") {
+      return res.status(409).json({
+        ok: false,
+        error: "ITEM_HAS_MOVES",
+        message: "No se puede eliminar: el item tiene movimientos. Desactívalo en su lugar.",
+      });
+    }
+    return serverError(res, err);
+  }
+}
+
 /* Stock: resumen del stock actual por item (opcional por bodega) */
 async function getStockSummary(req, res) {
   try {
@@ -404,6 +437,7 @@ module.exports = {
   createItem,
   updateItem,
   deactivateItem,
+  purgeItem,
   getStockSummary,
   listMoves,
   createMove,

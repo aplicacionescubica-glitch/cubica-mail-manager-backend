@@ -16,7 +16,12 @@ router.get("/items/:id", inventoryController.getItem);
 /* Items: mutación (solo admin) */
 router.post("/items", requireRole("ADMIN"), inventoryController.createItem);
 router.put("/items/:id", requireRole("ADMIN"), inventoryController.updateItem);
+
+/* Items: desactivar (soft delete) */
 router.delete("/items/:id", requireRole("ADMIN"), inventoryController.deactivateItem);
+
+/* Items: eliminar definitivamente condicionado (solo si no tiene movimientos) */
+router.delete("/items/:id/purge", requireRole("ADMIN"), inventoryController.purgeItem);
 
 /* Stock: lectura */
 router.get("/stock", inventoryController.getStockSummary);
