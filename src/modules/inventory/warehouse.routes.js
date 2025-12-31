@@ -16,6 +16,11 @@ router.get("/:id", warehouseController.getWarehouse);
 /* Mutaciones (solo admin) */
 router.post("/", requireRole("ADMIN"), warehouseController.createWarehouse);
 router.put("/:id", requireRole("ADMIN"), warehouseController.updateWarehouse);
+
+/* Eliminar físico (purge) con reasignación de movimientos a bodega destino */
+router.delete("/:id/purge", requireRole("ADMIN"), warehouseController.purgeWarehouse);
+
+/* Eliminar lógico (soft delete) */
 router.delete("/:id", requireRole("ADMIN"), warehouseController.deactivateWarehouse);
 
 module.exports = router;
